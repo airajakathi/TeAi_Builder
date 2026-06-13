@@ -282,6 +282,18 @@ export async function fetchWorkspaces(
   );
 }
 
+export async function fetchWorkspaceFolders(
+  token: string,
+  base: string = "",
+): Promise<{ folders: { path: string; name: string }[] }> {
+  return request<{ folders: { path: string; name: string }[] }>(
+    `${base}/api/workspace-folders`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
 export async function fetchCliApps(
   token: string,
   base: string = "",

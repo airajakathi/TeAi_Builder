@@ -509,6 +509,8 @@ class GatewayHTTPHandler:
             return self._handle_commands(request)
         if got == "/api/workspaces":
             return self._handle_workspaces(connection, request)
+        if got == "/api/workspace-folders":
+            return self._handle_workspace_folders(request)
         if got == "/api/webui/skills":
             return self._handle_webui_skills(request)
         m = re.match(r"^/api/webui/skills/([^/]+)$", got)
@@ -533,6 +535,23 @@ class GatewayHTTPHandler:
                 controls_available=self.workspace_controls_available(connection)
             )
         )
+
+    def _handle_workspace_folders(self, request: WsRequest) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        folders = []
+        try:
+            workspace_root = Path(self.workspaces.default_workspace()).resolve()
+            if workspace_root.is_dir():
+                for entry in sorted(workspace_root.iterdir(), key=lambda p: p.name.lower()):
+                    if entry.is_dir() and entry.name not in {"sessions", "cron", "memory"}:
+                        folders.append({
+                            "path": str(entry),
+                            "name": entry.name,
+                        })
+        except OSError:
+            pass
+        return _http_json_response({"folders": folders})
 
     def _handle_webui_skills(self, request: WsRequest) -> Response:
         if not self.check_api_token(request):

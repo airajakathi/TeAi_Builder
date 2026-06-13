@@ -172,6 +172,7 @@ interface ThreadComposerProps {
   workspaceError?: string | null;
   onWorkspaceScopeChange?: (scope: WorkspaceScopePayload) => void;
   pendingQueueKey?: string | null;
+  authToken?: string;
 }
 
 const COMMAND_ICONS: Record<string, LucideIcon> = {
@@ -765,6 +766,7 @@ export function ThreadComposer({
   workspaceError = null,
   onWorkspaceScopeChange,
   pendingQueueKey = null,
+  authToken,
 }: ThreadComposerProps) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
@@ -1844,6 +1846,7 @@ export function ThreadComposer({
           controls={workspaceControls}
           error={workspaceError}
           onChange={onWorkspaceScopeChange}
+          authToken={authToken}
         />
       </div>
     </form>
