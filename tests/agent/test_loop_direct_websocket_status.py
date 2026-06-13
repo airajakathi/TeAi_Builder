@@ -3,11 +3,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import GenerationSettings, LLMResponse
-from nanobot.session.webui_turns import WebuiTurnCoordinator
+from teai_builder.agent.loop import AgentLoop
+from teai_builder.bus.events import OutboundMessage
+from teai_builder.bus.queue import MessageBus
+from teai_builder.providers.base import GenerationSettings, LLMResponse
+from teai_builder.session.webui_turns import WebuiTurnCoordinator
 
 
 def _make_loop(tmp_path):

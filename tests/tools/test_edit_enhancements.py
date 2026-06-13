@@ -3,8 +3,8 @@ notebook JSON editing, and create-file semantics."""
 
 import pytest
 
-from nanobot.agent.tools.filesystem import EditFileTool, ReadFileTool, WriteFileTool
-from nanobot.agent.tools import file_state
+from teai_builder.agent.tools.filesystem import EditFileTool, ReadFileTool, WriteFileTool
+from teai_builder.agent.tools import file_state
 
 
 # ---------------------------------------------------------------------------

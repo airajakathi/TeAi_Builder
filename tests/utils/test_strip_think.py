@@ -1,4 +1,4 @@
-from nanobot.utils.helpers import extract_reasoning, extract_think, strip_think
+from teai_builder.utils.helpers import extract_reasoning, extract_think, strip_think
 
 
 class TestStripThinkTag:

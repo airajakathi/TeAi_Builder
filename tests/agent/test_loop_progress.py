@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import nanobot.agent.runner as runner_module
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMResponse, ToolCallRequest
-from nanobot.session.webui_turns import WebuiTurnCoordinator
-from nanobot.utils.progress_events import (
+import teai_builder.agent.runner as runner_module
+from teai_builder.agent.loop import AgentLoop
+from teai_builder.bus.events import InboundMessage
+from teai_builder.bus.queue import MessageBus
+from teai_builder.providers.base import LLMResponse, ToolCallRequest
+from teai_builder.session.webui_turns import WebuiTurnCoordinator
+from teai_builder.utils.progress_events import (
     invoke_file_edit_progress,
     on_progress_accepts_file_edit_events,
 )
@@ -750,7 +750,7 @@ class TestToolEventProgress:
             return False
 
         monkeypatch.setattr(
-            "nanobot.session.webui_turns.maybe_generate_webui_title_after_turn",
+            "teai_builder.session.webui_turns.maybe_generate_webui_title_after_turn",
             fake_title_after_turn,
         )
         scheduled_title: list[object] = []
@@ -798,7 +798,7 @@ class TestToolEventProgress:
             raise AssertionError("command-only turns should not generate titles")
 
         monkeypatch.setattr(
-            "nanobot.session.webui_turns.maybe_generate_webui_title_after_turn",
+            "teai_builder.session.webui_turns.maybe_generate_webui_title_after_turn",
             fake_title_after_turn,
         )
         scheduled: list[object] = []

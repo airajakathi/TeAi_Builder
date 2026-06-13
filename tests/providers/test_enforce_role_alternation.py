@@ -1,6 +1,6 @@
 """Tests for LLMProvider._enforce_role_alternation."""
 
-from nanobot.providers.base import LLMProvider, _SYNTHETIC_USER_CONTENT
+from teai_builder.providers.base import LLMProvider, _SYNTHETIC_USER_CONTENT
 
 
 class TestEnforceRoleAlternation:

@@ -6,14 +6,14 @@
     <meta name="color-scheme" content="light dark" />
     <meta
       name="description"
-      content="nanobot web UI — chat with your nanobot workspace."
+      content="TeAi Builder web UI - chat with your TeAi Builder workspace."
       data-i18n-meta="description"
     />
     <meta name="theme-color" content="#fafaf9" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#161618" media="(prefers-color-scheme: dark)" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/brand/nanobot_favicon_32.png" />
-    <link rel="icon" type="image/png" sizes="73x75" href="/brand/nanobot_icon.png" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/brand/nanobot_apple_touch.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/TeAi Builder_favicon_32.png" />
+    <link rel="icon" type="image/png" sizes="73x75" href="/brand/TeAi Builder_icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/brand/TeAi Builder_apple_touch.png" />
     <style>
       html,
       body,
@@ -80,7 +80,7 @@
     <script>
       (function () {
         try {
-          var stored = localStorage.getItem("nanobot-webui.theme");
+          var stored = localStorage.getItem("teai_builder-webui.theme");
           var dark =
             stored === "dark" ||
             (!stored &&
@@ -92,43 +92,43 @@
     </script>
     <script>
       (function () {
-        var localeKey = "nanobot.locale";
+        var localeKey = "teai_builder.locale";
         var copy = {
           en: {
-            boot: "Loading nanobot…",
-            description: "nanobot web UI — chat with your nanobot workspace."
+            boot: "Loading TeAi Builder…",
+            description: "TeAi Builder web UI - chat with your TeAi Builder workspace."
           },
           "zh-CN": {
-            boot: "正在加载 nanobot…",
-            description: "nanobot Web UI —— 与你的 nanobot 工作区对话。"
+            boot: "正在加载 TeAi Builder…",
+            description: "TeAi Builder Web UI —— 与你的 TeAi Builder 工作区对话。"
           },
           "zh-TW": {
-            boot: "正在載入 nanobot…",
-            description: "nanobot Web UI —— 與你的 nanobot 工作區對話。"
+            boot: "正在載入 TeAi Builder…",
+            description: "TeAi Builder Web UI —— 與你的 TeAi Builder 工作區對話。"
           },
           fr: {
-            boot: "Chargement de nanobot…",
-            description: "Interface web nanobot — discutez avec votre espace de travail nanobot."
+            boot: "Chargement de TeAi Builder…",
+            description: "Interface web TeAi Builder - discutez avec votre espace de travail TeAi Builder."
           },
           ja: {
-            boot: "nanobot を読み込み中…",
-            description: "nanobot Web UI — nanobot ワークスペースと会話します。"
+            boot: "TeAi Builder を読み込み中…",
+            description: "TeAi Builder Web UI - TeAi Builder ワークスペースと会話します。"
           },
           ko: {
-            boot: "nanobot 불러오는 중…",
-            description: "nanobot 웹 UI — nanobot 작업공간과 대화하세요."
+            boot: "TeAi Builder 불러오는 중…",
+            description: "TeAi Builder 웹 UI — TeAi Builder 작업공간과 대화하세요."
           },
           es: {
-            boot: "Cargando nanobot…",
-            description: "Interfaz web de nanobot: conversa con tu espacio de trabajo de nanobot."
+            boot: "Cargando TeAi Builder…",
+            description: "Interfaz web de TeAi Builder: conversa con tu espacio de trabajo de TeAi Builder."
           },
           vi: {
-            boot: "Đang tải nanobot…",
-            description: "Giao diện web nanobot — trò chuyện với workspace nanobot của bạn."
+            boot: "Đang tải TeAi Builder…",
+            description: "Giao diện web TeAi Builder — trò chuyện với workspace TeAi Builder của bạn."
           },
           id: {
-            boot: "Memuat nanobot…",
-            description: "UI web nanobot — ngobrol dengan workspace nanobot Anda."
+            boot: "Memuat TeAi Builder…",
+            description: "UI web TeAi Builder — ngobrol dengan workspace TeAi Builder Anda."
           }
         };
 
@@ -170,14 +170,14 @@
         } catch {}
       })();
     </script>
-    <title>nanobot</title>
+    <title>TeAi Builder</title>
   </head>
   <body class="bg-background text-foreground antialiased">
     <div id="root">
       <div class="boot-splash">
         <div class="boot-splash-inner">
           <span class="boot-dot" aria-hidden="true"></span>
-          <span data-boot-copy>Loading nanobot…</span>
+          <span data-boot-copy>Loading TeAi Builder…</span>
         </div>
       </div>
     </div>

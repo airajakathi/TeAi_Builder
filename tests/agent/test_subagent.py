@@ -5,9 +5,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nanobot.agent.subagent import SubagentManager
-from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMProvider
+from teai_builder.agent.subagent import SubagentManager
+from teai_builder.bus.queue import MessageBus
+from teai_builder.providers.base import LLMProvider
 
 
 @pytest.mark.asyncio

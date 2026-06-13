@@ -1,7 +1,7 @@
 """Unit tests for the Signal markdown → plain text + textStyle converter."""
 
-from nanobot.channels.signal import _markdown_to_signal, _partition_styles
-from nanobot.utils.helpers import split_message
+from teai_builder.channels.signal import _markdown_to_signal, _partition_styles
+from teai_builder.utils.helpers import split_message
 
 
 def _utf16_len(s: str) -> int:

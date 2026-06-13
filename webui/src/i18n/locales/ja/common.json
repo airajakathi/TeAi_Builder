@@ -1,13 +1,13 @@
 {
   "app": {
-    "brand": "nanobot",
+    "brand": "TeAi Builder",
     "loading": {
-      "connecting": "nanobot に接続中…",
-      "boot": "nanobot を読み込み中…"
+      "connecting": "TeAi Builder に接続中…",
+      "boot": "TeAi Builder を読み込み中…"
     },
     "error": {
-      "title": "nanobot に接続できませんでした",
-      "gatewayHint": "gateway（`nanobot gateway`）が起動しており、このページが同じマシン上で開かれていることを確認してください。"
+      "title": "TeAi Builder に接続できませんでした",
+      "gatewayHint": "gateway（`teai_builder gateway`）が起動しており、このページが同じマシン上で開かれていることを確認してください。"
     },
     "auth": {
       "title": "認証が必要です",
@@ -23,8 +23,8 @@
     },
     "system": {
       "section": "システム",
-      "restartHint": "実行時の変更を適用するには nanobot を再起動します。",
-      "restart": "nanobot を再起動",
+      "restartHint": "実行時の変更を適用するには TeAi Builder を再起動します。",
+      "restart": "TeAi Builder を再起動",
       "restarting": "再起動中...",
       "restartEngine": "エンジンを再起動",
       "restartingEngine": "エンジンを再起動中..."
@@ -33,11 +33,11 @@
       "completed": "{{seconds}} 秒で再起動が完了しました。"
     },
     "documentTitle": {
-      "base": "nanobot",
-      "chat": "{{title}} · nanobot"
+      "base": "TeAi Builder",
+      "chat": "{{title}} · TeAi Builder"
     },
     "meta": {
-      "description": "nanobot Web UI — nanobot ワークスペースと会話します。"
+      "description": "TeAi Builder Web UI — TeAi Builder ワークスペースと会話します。"
     }
   },
   "sidebar": {
@@ -108,7 +108,7 @@
       "language": "言語",
       "provider": "プロバイダー",
       "model": "モデル",
-      "restart": "nanobot を再起動",
+      "restart": "TeAi Builder を再起動",
       "configPath": "設定パス",
       "activePreset": "アクティブなプリセット",
       "gateway": "ゲートウェイ",
@@ -156,7 +156,7 @@
       "theme": "ライト表示とダーク表示を切り替えます。",
       "language": "WebUI で使用する言語を選択します。",
       "provider": "新しいモデルリクエストに使うプロバイダーを選択します。",
-      "model": "nanobot が既定で使用するモデル名を設定します。",
+      "model": "TeAi Builder が既定で使用するモデル名を設定します。",
       "configPath": "現在ゲートウェイが使用している設定ファイルです。",
       "selectedPreset": "名前付きプリセットはここでは読み取り専用です。編集するには config.json を変更してください。",
       "presetModel": "Default に切り替えると、WebUI からモデルとプロバイダーを編集できます。",
@@ -173,7 +173,7 @@
       "defaultAspectRatio": "プロンプトで比率が指定されていない場合に使用します。",
       "defaultImageSize": "対応しているプロバイダーへ送信するサイズ指定です。",
       "maxImagesPerTurn": "1 回の generate_image リクエストで生成できる画像数の上限です。",
-      "botName": "nanobot が表示名を使う場所に表示されます。",
+      "botName": "TeAi Builder が表示名を使う場所に表示されます。",
       "botIcon": "Bot 名の横に表示する短い emoji またはテキストです。",
       "timezone": "スケジュールと時刻を考慮する返信に使用します。",
       "localServiceAccess": "Full Access の shell コマンドが localhost サービスにアクセスできるようにします。",
@@ -183,7 +183,7 @@
       "selectedModelProvider": "選択したモデルによって設定されます。",
       "selectedModelValue": "選択したモデルによって設定されます。",
       "brandLogos": "設定で第三者プロバイダーと CLI のロゴを表示します。",
-      "cliAppsCatalog": "nanobot がローカルで実行できるアプリ CLI アダプターだけをインストールします。ネイティブアプリは変更しません。",
+      "cliAppsCatalog": "TeAi Builder がローカルで実行できるアプリ CLI アダプターだけをインストールします。ネイティブアプリは変更しません。",
       "cliAppsFilter": "アプリ、カテゴリ、機能で検索します。",
       "logs": "ネイティブエンジンのログフォルダーを開きます。",
       "diagnostics": "サポート用の小さなランタイムレポートを書き出します。",
@@ -225,11 +225,11 @@
       "loadError": "設定を読み込めませんでした",
       "unsaved": "未保存の変更があります。",
       "upToDate": "最新です。",
-      "savedRestart": "保存しました。反映するには nanobot を再起動してください。",
+      "savedRestart": "保存しました。反映するには TeAi Builder を再起動してください。",
       "restartAfterSaving": "変更を保存してから、準備ができたら再起動してください。",
       "savedRestartApply": "保存しました。準備ができたら再起動してください。",
       "imageProviderRestart": "画像プロバイダーの変更を保存しました。準備ができたら再起動してください。",
-      "hostRestartAfterSaving": "保存すると nanobot がエンジンを再起動します。",
+      "hostRestartAfterSaving": "保存すると TeAi Builder がエンジンを再起動します。",
       "hostRestartPending": "保存しました。準備ができたらエンジンを再起動します。",
       "hostApiUnavailable": "ホスト操作はネイティブアプリ内でのみ利用できます。",
       "logsOpened": "ログフォルダーを開きました。",
@@ -248,7 +248,7 @@
       "exporting": "書き出しています..."
     },
     "byok": {
-      "description": "自分の provider キーを使います。Nanobot は現在の config から値を読み込み、設定済みの provider だけを一般設定で選択できます。",
+      "description": "自分の provider キーを使います。TeAi Builder は現在の config から値を読み込み、設定済みの provider だけを一般設定で選択できます。",
       "configured": "設定済み",
       "notConfigured": "未設定",
       "configuredSection": "設定済み",
@@ -417,7 +417,7 @@
       "saveCustom": "MCP を保存",
       "configImport": "mcp.json をインポート",
       "importConfig": "インポート",
-      "restartRequired": "更新された MCP ツールに接続するには nanobot を再起動してください。",
+      "restartRequired": "更新された MCP ツールに接続するには TeAi Builder を再起動してください。",
       "toolsFound": "{{count}} 個のツール",
       "loading": "MCP プリセットを読み込み中...",
       "empty": "この条件に一致する MCP プリセットはありません。",
@@ -448,7 +448,7 @@
       "thirdPartyBrands": "製品名、ロゴ、ブランドはそれぞれの所有者に帰属します。使用は識別のみを目的とし、承認を意味するものではありません。"
     },
     "apps": {
-      "description": "nanobot がチャットで使用できる App CLI と MCP サービスを追加します。",
+      "description": "TeAi Builder がチャットで使用できる App CLI と MCP サービスを追加します。",
       "cliLabel": "CLI",
       "mcpLabel": "MCP",
       "filterAll": "すべて",
@@ -614,7 +614,7 @@
       "imageQuickActions": {
         "icon": {
           "title": "アプリアイコンを作る",
-          "prompt": "nanobot のクリーンな 1:1 アプリアイコンを生成してください。親しみやすいロボット、シンプルなベクター風、柔らかい青と白の配色、文字なし。"
+          "prompt": "TeAi Builder のクリーンな 1:1 アプリアイコンを生成してください。親しみやすいロボット、シンプルなベクター風、柔らかい青と白の配色、文字なし。"
         },
         "sticker": {
           "title": "ステッカーを作る",
@@ -745,7 +745,7 @@
             "description": "このチャットで実行中の agent ターンをキャンセルします。"
           },
           "restart": {
-            "title": "nanobot を再起動",
+            "title": "TeAi Builder を再起動",
             "description": "bot プロセスをその場で再起動します。"
           },
           "status": {
@@ -884,7 +884,7 @@
     "close": "ファイルプレビューを閉じる",
     "loading": "プレビューを読み込み中...",
     "failed": "このファイルをプレビューできませんでした。",
-    "routeMissing": "ファイルプレビューには最新の gateway が必要です。nanobot gateway を再起動してから再試行してください。",
+    "routeMissing": "ファイルプレビューには最新の gateway が必要です。teai_builder gateway を再起動してから再試行してください。",
     "resize": "ファイルプレビューの幅を変更",
     "truncated": "ファイルが大きいため、プレビューは途中まで表示されています。"
   },
@@ -904,7 +904,7 @@
     },
     "workspaceScopeRejected": {
       "title": "Workspace was not changed",
-      "body": "Nanobot kept the previous workspace because the requested project or access mode was rejected by the gateway."
+      "body": "TeAi Builder kept the previous workspace because the requested project or access mode was rejected by the gateway."
     }
   },
   "workspace": {

@@ -1,4 +1,4 @@
-import { Menu, Moon, Sun } from "lucide-react";
+import { Menu, Moon, PanelRight, Sun } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -16,6 +16,9 @@ interface ThreadHeaderProps {
   minimal?: boolean;
   promptNavigatorAction?: ReactNode;
   sessionInfoAction?: ReactNode;
+  canvasOpen?: boolean;
+  canvasHasContent?: boolean;
+  onToggleCanvas?: () => void;
 }
 
 export function ThreadHeader({
@@ -29,6 +32,9 @@ export function ThreadHeader({
   minimal = false,
   promptNavigatorAction,
   sessionInfoAction,
+  canvasOpen = false,
+  canvasHasContent = false,
+  onToggleCanvas,
 }: ThreadHeaderProps) {
   const { t } = useTranslation();
 
@@ -63,6 +69,30 @@ export function ThreadHeader({
       <div className="ml-auto flex shrink-0 items-center gap-1">
         {sessionInfoAction}
         {promptNavigatorAction}
+        {onToggleCanvas ? (
+          <div className="relative">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={canvasOpen ? "Close canvas panel" : "Open canvas panel"}
+              onClick={onToggleCanvas}
+              className={cn(
+                "host-no-drag h-8 w-8 rounded-full hover:bg-accent/40",
+                canvasOpen
+                  ? "text-foreground"
+                  : "text-muted-foreground/85 hover:text-foreground",
+              )}
+            >
+              <PanelRight className="h-4 w-4" />
+            </Button>
+            {canvasHasContent && !canvasOpen ? (
+              <span
+                aria-hidden
+                className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-blue-500"
+              />
+            ) : null}
+          </div>
+        ) : null}
         {!hideThemeButton ? (
           <ThemeButton
             theme={theme}

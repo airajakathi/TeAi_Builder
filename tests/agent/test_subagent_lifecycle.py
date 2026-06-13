@@ -7,15 +7,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.agent.hook import AgentHookContext
-from nanobot.agent.runner import AgentRunResult
-from nanobot.agent.subagent import (
+from teai_builder.agent.hook import AgentHookContext
+from teai_builder.agent.runner import AgentRunResult
+from teai_builder.agent.subagent import (
     SubagentManager,
     SubagentStatus,
     _SubagentHook,
 )
-from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMProvider
+from teai_builder.bus.queue import MessageBus
+from teai_builder.providers.base import LLMProvider
 
 # ---------------------------------------------------------------------------
 # Helpers

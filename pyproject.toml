@@ -1,21 +1,21 @@
 [project]
-name = "nanobot-ai"
+name = "teai-builder"
 version = "0.2.1"
-description = "A lightweight personal AI assistant framework"
+description = "TeAi Builder - an autonomous AI software company that researches, builds, verifies, and ships production-ready web, mobile, and desktop apps."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = {text = "LicenseRef-Proprietary"}
 authors = [
-    {name = "Xubin Ren"},
-    {name = "the nanobot contributors"}
+    {name = "TeAi Builder"}
 ]
-keywords = ["ai", "agent", "chatbot"]
+keywords = ["ai", "agent", "software-company", "builder"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Private :: Do Not Upload",
 ]
 license-files = [
     "LICENSE",
@@ -112,11 +112,11 @@ dev = [
 ]
 
 [project.scripts]
-nanobot = "nanobot.cli.commands:app"
+teai_builder = "teai_builder.cli.commands:app"
 
 # Third-party tool plugins register here.  Built-in tools are discovered
 # automatically via pkgutil scanning in ToolLoader.discover().
-# [project.entry-points."nanobot.tools"]
+# [project.entry-points."teai_builder.tools"]
 # my_plugin = "my_package.plugins:MyTool"
 
 [build-system]
@@ -131,32 +131,32 @@ allow-direct-references = true
 
 [tool.hatch.build]
 include = [
-    "nanobot/**/*.py",
-    "nanobot/templates/**/*.md",
-    "nanobot/skills/**/*.md",
-    "nanobot/skills/**/*.sh",
-    "nanobot/web/dist/**/*",
+    "teai_builder/**/*.py",
+    "teai_builder/templates/**/*.md",
+    "teai_builder/skills/**/*.md",
+    "teai_builder/skills/**/*.sh",
+    "teai_builder/web/dist/**/*",
 ]
-# nanobot/web/dist/ is produced by `cd webui && bun run build` and is
+# teai_builder/web/dist/ is produced by `cd webui && bun run build` and is
 # git-ignored. List it as an artifact so hatch ships it in both wheel and
 # sdist even though VCS does not track it.
 artifacts = [
-    "nanobot/web/dist/**/*",
+    "teai_builder/web/dist/**/*",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["nanobot"]
+packages = ["teai_builder"]
 
 [tool.hatch.build.targets.wheel.sources]
-"nanobot" = "nanobot"
+"teai_builder" = "teai_builder"
 
 [tool.hatch.build.targets.wheel.force-include]
-"bridge" = "nanobot/bridge"
+"bridge" = "teai_builder/bridge"
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "nanobot/",
-    "nanobot/web/dist/",
+    "teai_builder/",
+    "teai_builder/web/dist/",
     "bridge/",
     "hatch_build.py",
     "README.md",
@@ -178,7 +178,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.coverage.run]
-source = ["nanobot"]
+source = ["teai_builder"]
 omit = ["tests/*", "**/tests/*"]
 
 [tool.coverage.report]

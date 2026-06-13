@@ -10,12 +10,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.agent.subagent import SubagentManager, SubagentStatus
-from nanobot.agent.tools.search import FindFilesTool, GrepTool
-from nanobot.agent.tools.web import WebSearchTool
-from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import WebSearchConfig
+from teai_builder.agent.loop import AgentLoop
+from teai_builder.agent.subagent import SubagentManager, SubagentStatus
+from teai_builder.agent.tools.search import FindFilesTool, GrepTool
+from teai_builder.agent.tools.web import WebSearchTool
+from teai_builder.bus.queue import MessageBus
+from teai_builder.config.schema import WebSearchConfig
 
 
 @pytest.mark.asyncio
@@ -30,7 +30,7 @@ async def test_web_search_tool_refreshes_dynamic_config_loader(monkeypatch) -> N
 
     monkeypatch.setattr(WebSearchTool, "_search_duckduckgo", fake_duckduckgo)
 
-    assert await tool.execute("nanobot") == "duckduckgo:nanobot:3"
+    assert await tool.execute("teai_builder") == "duckduckgo:teai_builder:3"
 
 
 @pytest.mark.asyncio

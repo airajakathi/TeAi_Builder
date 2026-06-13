@@ -17,15 +17,15 @@ WORKDIR /app
 # Install Python dependencies first (cached layer). Hatch reads the custom build
 # hook from hatch_build.py even for this metadata-only install.
 COPY pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES.md hatch_build.py ./
-RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
+RUN mkdir -p teai_builder bridge && touch teai_builder/__init__.py && \
     uv pip install --system --no-cache . && \
-    rm -rf nanobot bridge
+    rm -rf teai_builder bridge
 
 # Copy the full source and install
-COPY nanobot/ nanobot/
+COPY teai_builder/ teai_builder/
 COPY bridge/ bridge/
 COPY webui/ webui/
-RUN NANOBOT_FORCE_WEBUI_BUILD=1 uv pip install --system --no-cache .
+RUN TEAI_BUILDER_FORCE_WEBUI_BUILD=1 uv pip install --system --no-cache .
 
 # Build the WhatsApp bridge
 WORKDIR /app/bridge
@@ -35,15 +35,15 @@ RUN git config --global --add url."https://github.com/".insteadOf ssh://git@gith
 WORKDIR /app
 
 # Create non-root user and config directory
-RUN useradd -m -u 1000 -s /bin/bash nanobot && \
-    mkdir -p /home/nanobot/.nanobot && \
-    chown -R nanobot:nanobot /home/nanobot /app
+RUN useradd -m -u 1000 -s /bin/bash teai_builder && \
+    mkdir -p /home/teai_builder/.teai_builder && \
+    chown -R teai_builder:teai_builder /home/teai_builder /app
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 
-USER nanobot
-ENV HOME=/home/nanobot
+USER teai_builder
+ENV HOME=/home/teai_builder
 
 # Gateway health endpoint and optional WebUI/WebSocket channel ports
 EXPOSE 18790 8765

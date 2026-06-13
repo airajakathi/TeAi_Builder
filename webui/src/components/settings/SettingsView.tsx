@@ -235,7 +235,7 @@ interface CustomMcpForm {
   toolTimeout: string;
 }
 
-const LOCAL_PREFS_STORAGE_KEY = "nanobot-webui.settings-preferences";
+const LOCAL_PREFS_STORAGE_KEY = "teai_builder-webui.settings-preferences";
 
 const DEFAULT_LOCAL_PREFS: LocalPreferences = {
   density: "comfortable",
@@ -358,7 +358,7 @@ const DEFAULT_AGENT_SETTINGS_DRAFT: AgentSettingsDraft = {
   presetLabel: "Default",
   contextWindowTokens: 65_536,
   timezone: "UTC",
-  botName: "nanobot",
+  botName: "teai_builder",
   botIcon: "",
   toolHintMaxLength: 40,
 };
@@ -1913,7 +1913,7 @@ function VersionCheckRow({ currentVersion }: { currentVersion?: string }) {
           {tx("settings.about.version", "Version")}
         </div>
         <div className="mt-0.5 text-[12px] leading-5 text-muted-foreground">
-          {currentVersion ? `v${currentVersion}` : "nanobot"}
+          {currentVersion ? `v${currentVersion}` : "teai_builder"}
         </div>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-2">
@@ -3355,7 +3355,7 @@ function AppsCatalogSettings({
           <p className="max-w-[680px] text-[13px] leading-5 text-muted-foreground">
             {tx(
               "settings.apps.description",
-              "Add local app adapters and connected tool servers that nanobot can use from chat.",
+              "Add local app adapters and connected tool servers that teai_builder can use from chat.",
             )}
           </p>
           <span className="text-[12px] font-medium text-muted-foreground">{caption}</span>
@@ -3411,7 +3411,7 @@ function AppsCatalogSettings({
 
       {requiresRestartPending ? (
         <div className="flex flex-col gap-3 rounded-[12px] border border-amber-500/20 bg-amber-500/8 px-4 py-3 text-[12.5px] text-amber-800 dark:text-amber-200 sm:flex-row sm:items-center sm:justify-between">
-          <span>{tx("settings.mcp.restartRequired", "Restart nanobot to connect updated MCP tools.")}</span>
+          <span>{tx("settings.mcp.restartRequired", "Restart teai_builder to connect updated MCP tools.")}</span>
           {onRestart ? (
             <Button
               type="button"
@@ -4415,7 +4415,7 @@ function RuntimeSettings({
       <section>
         <SettingsSectionTitle>{tx("settings.sections.identity", "Identity")}</SettingsSectionTitle>
         <SettingsGroup>
-          <SettingsRow title={tx("settings.rows.botName", "Bot name")} description={tx("settings.help.botName", "Shown wherever nanobot uses a display name.")}>
+          <SettingsRow title={tx("settings.rows.botName", "Bot name")} description={tx("settings.help.botName", "Shown wherever teai_builder uses a display name.")}>
             <Input
               value={form.botName}
               onChange={(event) => setForm((prev) => ({ ...prev, botName: event.target.value }))}
@@ -4441,7 +4441,7 @@ function RuntimeSettings({
             pendingRestart={requiresRestartPending}
             dirtyMessage={
               isNativeHost
-                ? tx("settings.status.hostRestartAfterSaving", "Save changes and nanobot will restart its engine.")
+                ? tx("settings.status.hostRestartAfterSaving", "Save changes and teai_builder will restart its engine.")
                 : tx("settings.status.restartAfterSaving", "Save changes, then restart when ready.")
             }
             pendingMessage={

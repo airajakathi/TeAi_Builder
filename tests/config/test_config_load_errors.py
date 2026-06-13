@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from nanobot.config.loader import load_config
+from teai_builder.config.loader import load_config
 
 
 def test_load_config_missing_file_uses_defaults(tmp_path) -> None:

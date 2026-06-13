@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.config.loader import set_config_path
-from nanobot.utils.artifacts import (
+from teai_builder.config.loader import set_config_path
+from teai_builder.utils.artifacts import (
     ArtifactError,
     decode_image_data_url,
     store_generated_image_artifact,

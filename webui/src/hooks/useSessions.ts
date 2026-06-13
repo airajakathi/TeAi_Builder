@@ -12,6 +12,7 @@ import {
 import { hasPendingAgentActivity } from "@/lib/activity-timeline";
 import { deriveTitle } from "@/lib/format";
 import type {
+  CanvasRestoreItem,
   ChatSummary,
   SessionAutomationJob,
   SessionDeleteResult,
@@ -20,6 +21,7 @@ import type {
 } from "@/lib/types";
 
 const EMPTY_MESSAGES: UIMessage[] = [];
+const EMPTY_CANVAS_ITEMS: CanvasRestoreItem[] = [];
 const INITIAL_HISTORY_PAGE_LIMIT = 160;
 const OLDER_HISTORY_PAGE_LIMIT = 120;
 const CHAT_CREATE_TIMEOUT_MS = 60_000;
@@ -193,9 +195,14 @@ export function useSessionHistory(key: string | null): {
   forkBoundaryMessageCount: number | null;
   /** ``true`` when the replayed transcript ends with a trace row (turn still in flight). */
   hasPendingToolCalls: boolean;
+  /** Canvas items (``canvas()`` pushes) persisted in the thread, for panel restore. */
+  restoredCanvasItems: CanvasRestoreItem[];
 } {
   const { token } = useClient();
   const loadingOlderRef = useRef(false);
+  const [restoredCanvasItems, setRestoredCanvasItems] = useState<CanvasRestoreItem[]>(
+    EMPTY_CANVAS_ITEMS,
+  );
   const [refreshSeq, setRefreshSeq] = useState(0);
   const refresh = useCallback(() => {
     setRefreshSeq((value) => value + 1);
@@ -227,6 +234,7 @@ export function useSessionHistory(key: string | null): {
   });
 
   useEffect(() => {
+    setRestoredCanvasItems(EMPTY_CANVAS_ITEMS);
     if (!key) {
       setState({
         key: null,
@@ -289,6 +297,11 @@ export function useSessionHistory(key: string | null): {
         const forkBoundary = typeof body.fork_boundary_message_count === "number"
           ? Math.max(0, Math.min(body.fork_boundary_message_count, ui.length))
           : null;
+        setRestoredCanvasItems(
+          Array.isArray(body.canvas_items) && body.canvas_items.length > 0
+            ? body.canvas_items
+            : EMPTY_CANVAS_ITEMS,
+        );
         setState((prev) => ({
           key,
           messages: ui,
@@ -414,6 +427,7 @@ export function useSessionHistory(key: string | null): {
       version: 0,
       forkBoundaryMessageCount: null,
       hasPendingToolCalls: false,
+      restoredCanvasItems: EMPTY_CANVAS_ITEMS,
     };
   }
 
@@ -432,6 +446,7 @@ export function useSessionHistory(key: string | null): {
       version: 0,
       forkBoundaryMessageCount: null,
       hasPendingToolCalls: false,
+      restoredCanvasItems: EMPTY_CANVAS_ITEMS,
     };
   }
 
@@ -447,6 +462,7 @@ export function useSessionHistory(key: string | null): {
     version: state.version,
     forkBoundaryMessageCount: state.forkBoundaryMessageCount,
     hasPendingToolCalls: state.hasPendingToolCalls,
+    restoredCanvasItems,
   };
 }
 

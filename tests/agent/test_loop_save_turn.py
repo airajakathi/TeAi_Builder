@@ -4,19 +4,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.context import ContextBuilder
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.cron.session_turns import CRON_HISTORY_META, CRON_TRIGGER_META
-from nanobot.providers.base import LLMResponse
-from nanobot.session.goal_state import GOAL_STATE_KEY
-from nanobot.session.manager import Session, SessionManager
-from nanobot.session.turn_continuation import (
+from teai_builder.agent.context import ContextBuilder
+from teai_builder.agent.loop import AgentLoop
+from teai_builder.bus.events import InboundMessage
+from teai_builder.bus.queue import MessageBus
+from teai_builder.cron.session_turns import CRON_HISTORY_META, CRON_TRIGGER_META
+from teai_builder.providers.base import LLMResponse
+from teai_builder.session.goal_state import GOAL_STATE_KEY
+from teai_builder.session.manager import Session, SessionManager
+from teai_builder.session.turn_continuation import (
     INTERNAL_CONTINUATION_META,
     INTERNAL_CONTINUATION_RUN_STARTED_AT_META,
 )
-from nanobot.session.webui_turns import (
+from teai_builder.session.webui_turns import (
     TITLE_GENERATION_MAX_TOKENS,
     TITLE_GENERATION_REASONING_EFFORT,
     WEBUI_SESSION_METADATA_KEY,
@@ -25,12 +25,12 @@ from nanobot.session.webui_turns import (
     clean_generated_title,
     maybe_generate_webui_title,
 )
-from nanobot.utils.llm_runtime import LLMRuntime
+from teai_builder.utils.llm_runtime import LLMRuntime
 
 
 def _mk_loop() -> AgentLoop:
     loop = AgentLoop.__new__(AgentLoop)
-    from nanobot.config.schema import AgentDefaults
+    from teai_builder.config.schema import AgentDefaults
 
     loop.max_tool_result_chars = AgentDefaults().max_tool_result_chars
     return loop
@@ -220,7 +220,7 @@ def test_webui_title_update_uses_captured_llm_runtime(
         return False
 
     monkeypatch.setattr(
-        "nanobot.session.webui_turns.maybe_generate_webui_title_after_turn",
+        "teai_builder.session.webui_turns.maybe_generate_webui_title_after_turn",
         fake_title_after_turn,
     )
     coordinator = WebuiTurnCoordinator(
@@ -1015,8 +1015,8 @@ async def test_next_turn_after_crash_closes_pending_user_turn_before_new_input(t
 
 @pytest.mark.asyncio
 async def test_stop_preserves_runtime_checkpoint_for_next_turn(tmp_path: Path) -> None:
-    from nanobot.command.builtin import cmd_stop
-    from nanobot.command.router import CommandContext
+    from teai_builder.command.builtin import cmd_stop
+    from teai_builder.command.router import CommandContext
 
     loop = _make_full_loop(tmp_path)
     loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]

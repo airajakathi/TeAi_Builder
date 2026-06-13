@@ -876,6 +876,13 @@ export interface WebuiThreadPagePayload {
   user_message_offset?: number;
 }
 
+export interface CanvasRestoreItem {
+  type: string;
+  content: string;
+  title?: string;
+  lang?: string;
+}
+
 export interface WebuiThreadPersistedPayload {
   schemaVersion: number;
   sessionKey?: string;
@@ -883,6 +890,7 @@ export interface WebuiThreadPersistedPayload {
   messages: UIMessage[];
   fork_boundary_message_count?: number;
   has_pending_tool_calls?: boolean;
+  canvas_items?: CanvasRestoreItem[];
   page?: WebuiThreadPagePayload;
   workspace_scope?: WorkspaceScopePayload;
 }

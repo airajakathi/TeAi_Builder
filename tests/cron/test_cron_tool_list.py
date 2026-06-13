@@ -4,10 +4,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from nanobot.agent.tools.context import RequestContext
-from nanobot.agent.tools.cron import CronTool
-from nanobot.cron.service import CronService
-from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
+from teai_builder.agent.tools.context import RequestContext
+from teai_builder.agent.tools.cron import CronTool
+from teai_builder.cron.service import CronService
+from teai_builder.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
 
 
 def _make_tool(tmp_path) -> CronTool:

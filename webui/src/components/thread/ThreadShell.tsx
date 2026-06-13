@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type React from "react";
 import { useTranslation } from "react-i18next";
 
+import { CanvasPanel } from "@/components/CanvasPanel";
 import { FilePreviewPanel } from "@/components/FilePreviewPanel";
 import { PromptNavigator } from "@/components/thread/PromptNavigator";
 import { SessionInfoPopover } from "@/components/thread/SessionInfoPopover";
@@ -9,7 +10,7 @@ import { ThreadComposer } from "@/components/thread/ThreadComposer";
 import { ThreadHeader } from "@/components/thread/ThreadHeader";
 import { StreamErrorNotice } from "@/components/thread/StreamErrorNotice";
 import { ThreadViewport, type ThreadViewportHandle } from "@/components/thread/ThreadViewport";
-import { useNanobotStream, type SendImage, type SendOptions } from "@/hooks/useNanobotStream";
+import { useTeaiBuilderStream, type SendImage, type SendOptions } from "@/hooks/useTeaiBuilderStream";
 import { useSessionHistory } from "@/hooks/useSessions";
 import { fetchCliApps, fetchMcpPresets, fetchSettings, listSlashCommands } from "@/lib/api";
 import {
@@ -31,6 +32,7 @@ import type {
   WorkspaceScopePayload,
   WorkspacesPayload,
 } from "@/lib/types";
+import { useCanvasContent } from "@/hooks/useCanvasContent";
 import { normalizeLegacyLongTaskMessages } from "@/lib/thread-display-compat";
 import { scrubSubagentUiMessages } from "@/lib/subagent-channel-display";
 import { useClient } from "@/providers/ClientProvider";
@@ -59,6 +61,12 @@ const FILE_PREVIEW_MAX_WIDTH = 860;
 const FILE_PREVIEW_MIN_MAIN_WIDTH = 420;
 const FILE_PREVIEW_CLOSE_ANIMATION_MS = 320;
 
+const CANVAS_DEFAULT_WIDTH = 560;
+const CANVAS_MIN_WIDTH = 360;
+const CANVAS_MAX_WIDTH = 900;
+const CANVAS_MIN_MAIN_WIDTH = 420;
+const CANVAS_CLOSE_ANIMATION_MS = 320;
+
 function clampFilePreviewWidth(width: number, maxWidth: number): number {
   return Math.min(Math.max(width, FILE_PREVIEW_MIN_WIDTH), maxWidth);
 }
@@ -67,6 +75,17 @@ function maxFilePreviewWidth(containerWidth: number): number {
   return Math.max(
     FILE_PREVIEW_MIN_WIDTH,
     Math.min(FILE_PREVIEW_MAX_WIDTH, containerWidth - FILE_PREVIEW_MIN_MAIN_WIDTH),
+  );
+}
+
+function clampCanvasWidth(width: number, maxWidth: number): number {
+  return Math.min(Math.max(width, CANVAS_MIN_WIDTH), maxWidth);
+}
+
+function maxCanvasWidth(containerWidth: number): number {
+  return Math.max(
+    CANVAS_MIN_WIDTH,
+    Math.min(CANVAS_MAX_WIDTH, containerWidth - CANVAS_MIN_MAIN_WIDTH),
   );
 }
 
@@ -258,6 +277,7 @@ export function ThreadShell({
     refresh: refreshHistory,
     version: historyVersion,
     forkBoundaryMessageCount,
+    restoredCanvasItems,
   } = useSessionHistory(historyKey);
   const { client, modelName, token } = useClient();
   const [booting, setBooting] = useState(false);
@@ -282,9 +302,16 @@ export function ThreadShell({
   const [filePreviewPath, setFilePreviewPath] = useState<string | null>(null);
   const [filePreviewClosing, setFilePreviewClosing] = useState(false);
   const [filePreviewWidth, setFilePreviewWidth] = useState(FILE_PREVIEW_DEFAULT_WIDTH);
+  const [canvasPanelOpen, setCanvasPanelOpen] = useState(false);
+  const [canvasPanelClosing, setCanvasPanelClosing] = useState(false);
+  const [canvasPanelWidth, setCanvasPanelWidth] = useState(CANVAS_DEFAULT_WIDTH);
   const shellRef = useRef<HTMLElement | null>(null);
   const filePreviewWidthRef = useRef(FILE_PREVIEW_DEFAULT_WIDTH);
   const filePreviewCloseTimerRef = useRef<number | null>(null);
+  const canvasPanelWidthRef = useRef(CANVAS_DEFAULT_WIDTH);
+  const canvasPanelCloseTimerRef = useRef<number | null>(null);
+  const canvasPrevTotalRef = useRef(0);
+  const canvasHasStreamedRef = useRef(false);
   const pendingFirstRef = useRef<PendingFirstMessage | null>(null);
   const viewportRef = useRef<ThreadViewportHandle | null>(null);
   const messageCacheRef = useRef<Map<string, UIMessage[]>>(new Map());
@@ -314,7 +341,10 @@ export function ThreadShell({
     setMessages,
     streamError,
     dismissStreamError,
-  } = useNanobotStream(chatId, initial, hasPendingToolCalls, handleTurnEnd);
+  } = useTeaiBuilderStream(chatId, initial, hasPendingToolCalls, handleTurnEnd);
+
+  const displayMessages = useMemo(() => projectWebuiThreadMessages(messages), [messages]);
+  const canvasContent = useCanvasContent(displayMessages, chatId, restoredCanvasItems);
 
   useEffect(() => {
     if (chatId && historyKey) sessionKeyByChatIdRef.current.set(chatId, historyKey);
@@ -341,7 +371,38 @@ export function ThreadShell({
     };
   }, []);
 
-  const displayMessages = useMemo(() => projectWebuiThreadMessages(messages), [messages]);
+  // Reset canvas tracking when the conversation changes
+  useEffect(() => {
+    canvasHasStreamedRef.current = false;
+    canvasPrevTotalRef.current = 0;
+  }, [historyKey]);
+
+  // Track that a stream has started for this session
+  useEffect(() => {
+    if (isStreaming) canvasHasStreamedRef.current = true;
+  }, [isStreaming]);
+
+  // Auto-open canvas panel when agent produces new visual content
+  useEffect(() => {
+    const total = canvasContent.items.length;
+    if (!canvasHasStreamedRef.current) {
+      canvasPrevTotalRef.current = total;
+      return;
+    }
+    if (total > canvasPrevTotalRef.current) {
+      canvasPrevTotalRef.current = total;
+      if (!canvasPanelOpen) setCanvasPanelOpen(true);
+    }
+  }, [canvasContent.items.length, canvasPanelOpen]);
+
+  // Cleanup canvas close timer on unmount
+  useEffect(() => {
+    return () => {
+      if (canvasPanelCloseTimerRef.current !== null) {
+        window.clearTimeout(canvasPanelCloseTimerRef.current);
+      }
+    };
+  }, []);
 
   const showHeroComposer = messages.length === 0 && !loading;
   const wasShowingHeroComposerRef = useRef(showHeroComposer);
@@ -478,7 +539,7 @@ export function ThreadShell({
     }
   }, [chatId, messages]);
 
-  // Persist thread to in-memory cache after paint so ``useNanobotStream``'s chat switch
+  // Persist thread to in-memory cache after paint so ``useTeaiBuilderStream``'s chat switch
   // ``useEffect`` reset has flushed; ``skipLayoutCacheRef`` drops the first run that still
   // sees the *previous* chat's ``messages`` (avoids stale rows leaking across sessions).
   useEffect(() => {
@@ -547,9 +608,18 @@ export function ThreadShell({
       window.clearTimeout(filePreviewCloseTimerRef.current);
       filePreviewCloseTimerRef.current = null;
     }
+    // Close canvas panel when opening a file preview
+    if (canvasPanelOpen) {
+      setCanvasPanelClosing(true);
+      canvasPanelCloseTimerRef.current = window.setTimeout(() => {
+        canvasPanelCloseTimerRef.current = null;
+        setCanvasPanelOpen(false);
+        setCanvasPanelClosing(false);
+      }, CANVAS_CLOSE_ANIMATION_MS);
+    }
     setFilePreviewClosing(false);
     setFilePreviewPath(path);
-  }, []);
+  }, [canvasPanelOpen]);
 
   const handleCloseFilePreview = useCallback(() => {
     if (!filePreviewPath || filePreviewClosing) return;
@@ -561,7 +631,74 @@ export function ThreadShell({
     }, FILE_PREVIEW_CLOSE_ANIMATION_MS);
   }, [filePreviewClosing, filePreviewPath]);
 
-  const handleFilePreviewResizeStart = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+  const handleToggleCanvasPanel = useCallback(() => {
+    if (canvasPanelOpen) {
+      // Close with animation
+      if (canvasPanelCloseTimerRef.current !== null) return;
+      setCanvasPanelClosing(true);
+      canvasPanelCloseTimerRef.current = window.setTimeout(() => {
+        canvasPanelCloseTimerRef.current = null;
+        setCanvasPanelOpen(false);
+        setCanvasPanelClosing(false);
+      }, CANVAS_CLOSE_ANIMATION_MS);
+    } else {
+      // Opening canvas: close file preview first to avoid layout conflicts
+      if (filePreviewPath) {
+        setFilePreviewClosing(true);
+        filePreviewCloseTimerRef.current = window.setTimeout(() => {
+          filePreviewCloseTimerRef.current = null;
+          setFilePreviewPath(null);
+          setFilePreviewClosing(false);
+        }, FILE_PREVIEW_CLOSE_ANIMATION_MS);
+      }
+      setCanvasPanelOpen(true);
+    }
+  }, [canvasPanelOpen, filePreviewPath]);
+
+  const handleCanvasPanelResizeStart = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    const shellRect = shellRef.current?.getBoundingClientRect();
+    const rightEdge = shellRect?.right ?? window.innerWidth;
+    const maxWidth = maxCanvasWidth(shellRect?.width ?? window.innerWidth);
+    const originalBodyCursor = document.body.style.cursor;
+    const originalBodyUserSelect = document.body.style.userSelect;
+    let nextWidth = canvasPanelWidthRef.current;
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      nextWidth = clampCanvasWidth(rightEdge - moveEvent.clientX, maxWidth);
+      canvasPanelWidthRef.current = nextWidth;
+      setCanvasPanelWidth(nextWidth);
+    };
+    const handleMouseUp = () => {
+      document.body.style.cursor = originalBodyCursor;
+      document.body.style.userSelect = originalBodyUserSelect;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  }, []);
+
+  // Keep canvas width clamped when the shell resizes
+  useEffect(() => {
+    if (!canvasPanelOpen) return;
+    const clampToShell = () => {
+      const shellWidth = shellRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+      const maxWidth = maxCanvasWidth(shellWidth);
+      const nextWidth = clampCanvasWidth(canvasPanelWidthRef.current, maxWidth);
+      canvasPanelWidthRef.current = nextWidth;
+      setCanvasPanelWidth(nextWidth);
+    };
+    clampToShell();
+    window.addEventListener("resize", clampToShell);
+    return () => window.removeEventListener("resize", clampToShell);
+  }, [canvasPanelOpen]);
+
+  const handleFilePreviewResizeStart = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
     const panel = event.currentTarget.closest<HTMLElement>("[data-file-preview-panel]");
@@ -750,6 +887,9 @@ export function ThreadShell({
             minimal={!session && !loading}
             promptNavigatorAction={promptNavigatorAction}
             sessionInfoAction={sessionInfoAction}
+            canvasOpen={canvasPanelOpen}
+            canvasHasContent={canvasContent.hasContent}
+            onToggleCanvas={session ? handleToggleCanvasPanel : undefined}
           />
         ) : null}
         <ThreadViewport
@@ -783,6 +923,20 @@ export function ThreadShell({
           onClose={handleCloseFilePreview}
         />
       ) : null}
+      <CanvasPanel
+        isOpen={canvasPanelOpen}
+        isClosing={canvasPanelClosing}
+        width={canvasPanelWidth}
+        items={canvasContent.items}
+        activeId={canvasContent.activeId}
+        onSetActiveId={canvasContent.setActiveId}
+        onRemoveItem={canvasContent.removeItem}
+        onClearAll={canvasContent.clearAll}
+        onAddItem={canvasContent.addItem}
+        onClose={handleToggleCanvasPanel}
+        onResizeStart={handleCanvasPanelResizeStart}
+        onSendToTeaiBuilder={session ? handleThreadSend : undefined}
+      />
     </section>
   );
 }

@@ -122,7 +122,7 @@ export class WhatsAppClient {
       version,
       logger,
       printQRInTerminal: false,
-      browser: ['nanobot', 'cli', VERSION],
+      browser: ['teai_builder', 'cli', VERSION],
       syncFullHistory: false,
       markOnlineOnConnect: false,
     });

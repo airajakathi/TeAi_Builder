@@ -5,11 +5,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
-import nanobot.agent.memory as memory_module
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import AgentDefaults
-from nanobot.providers.base import GenerationSettings, LLMResponse
+import teai_builder.agent.memory as memory_module
+from teai_builder.agent.loop import AgentLoop
+from teai_builder.bus.queue import MessageBus
+from teai_builder.config.schema import AgentDefaults
+from teai_builder.providers.base import GenerationSettings, LLMResponse
 
 
 def _make_loop(

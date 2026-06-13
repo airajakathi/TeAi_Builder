@@ -31,7 +31,7 @@ import {
 } from "@/lib/bootstrap";
 import { displayTitle } from "@/lib/chat-groups";
 import { deriveTitle } from "@/lib/format";
-import { NanobotClient } from "@/lib/nanobot-client";
+import { TeaiBuilderClient } from "@/lib/teai_builder-client";
 import { ClientProvider, useClient } from "@/providers/ClientProvider";
 import type {
   ChatSummary,
@@ -57,16 +57,16 @@ type BootState =
   | { status: "auth"; failed?: boolean }
   | {
       status: "ready";
-      client: NanobotClient;
+      client: TeaiBuilderClient;
       token: string;
       tokenExpiresAt: number;
       modelName: string | null;
       runtimeSurface: RuntimeSurface;
     };
 
-const SIDEBAR_STORAGE_KEY = "nanobot-webui.sidebar";
-const COMPLETED_RUNS_STORAGE_KEY = "nanobot-webui.sidebar.completed-runs.v1";
-const RESTART_STARTED_KEY = "nanobot-webui.restartStartedAt";
+const SIDEBAR_STORAGE_KEY = "teai_builder-webui.sidebar";
+const COMPLETED_RUNS_STORAGE_KEY = "teai_builder-webui.sidebar.completed-runs.v1";
+const RESTART_STARTED_KEY = "teai_builder-webui.restartStartedAt";
 const SIDEBAR_WIDTH = 272;
 const SIDEBAR_RAIL_WIDTH = 56;
 const TOKEN_REFRESH_MARGIN_MS = 30_000;
@@ -336,7 +336,7 @@ export default function App() {
   const bootstrapSecretRef = useRef("");
 
   const refreshReadyClient = useCallback(
-    async (client: NanobotClient, fallbackSurface: RuntimeSurface) => {
+    async (client: TeaiBuilderClient, fallbackSurface: RuntimeSurface) => {
       const boot = await fetchBootstrap("", bootstrapSecretRef.current);
       const url = deriveWsUrl(boot.ws_path, boot.token, boot.ws_url);
       const runtimeSurface = boot.runtime_surface
@@ -377,7 +377,7 @@ export default function App() {
           const url = deriveWsUrl(boot.ws_path, boot.token, boot.ws_url);
           const runtimeSurface = toRuntimeSurface(boot.runtime_surface);
           const runtimeHost = createRuntimeHost(runtimeSurface, boot.runtime_capabilities);
-          const client = new NanobotClient({
+          const client = new TeaiBuilderClient({
             url,
             socketFactory: runtimeHost.socketFactory,
             onReauth: async () => {

@@ -2,7 +2,7 @@ import warnings
 
 import pytest
 
-from nanobot.config.schema import Config
+from teai_builder.config.schema import Config
 
 
 def test_resolve_preset_returns_defaults_when_no_preset() -> None:

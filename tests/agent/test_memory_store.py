@@ -5,7 +5,7 @@ from datetime import datetime
 
 import pytest
 
-from nanobot.agent.memory import _HISTORY_ENTRY_HARD_CAP, MemoryStore
+from teai_builder.agent.memory import _HISTORY_ENTRY_HARD_CAP, MemoryStore
 
 
 @pytest.fixture

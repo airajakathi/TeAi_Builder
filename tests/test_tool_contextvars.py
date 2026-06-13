@@ -4,13 +4,13 @@ import asyncio
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.agent.tools.context import RequestContext
-from nanobot.agent.tools.cron import CronTool
-from nanobot.agent.tools.message import MessageTool
-from nanobot.agent.tools.spawn import SpawnTool
-from nanobot.cron.service import CronService
-from nanobot.session.keys import UNIFIED_SESSION_KEY
+from teai_builder.agent.loop import AgentLoop
+from teai_builder.agent.tools.context import RequestContext
+from teai_builder.agent.tools.cron import CronTool
+from teai_builder.agent.tools.message import MessageTool
+from teai_builder.agent.tools.spawn import SpawnTool
+from teai_builder.cron.service import CronService
+from teai_builder.session.keys import UNIFIED_SESSION_KEY
 
 
 @pytest.mark.asyncio

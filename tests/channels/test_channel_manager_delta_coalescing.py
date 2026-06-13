@@ -4,11 +4,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.base import BaseChannel
-from nanobot.channels.manager import ChannelManager
-from nanobot.config.schema import Config
+from teai_builder.bus.events import OutboundMessage
+from teai_builder.bus.queue import MessageBus
+from teai_builder.channels.base import BaseChannel
+from teai_builder.channels.manager import ChannelManager
+from teai_builder.config.schema import Config
 
 
 class MockChannel(BaseChannel):

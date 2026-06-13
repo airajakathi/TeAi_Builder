@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nanobot.agent.context import ContextBuilder
-from nanobot.utils.document import extract_documents
+from teai_builder.agent.context import ContextBuilder
+from teai_builder.utils.document import extract_documents
 
 
 def _make_builder(tmp_path: Path) -> ContextBuilder:

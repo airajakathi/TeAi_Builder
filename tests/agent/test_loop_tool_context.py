@@ -3,10 +3,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMResponse, ToolCallRequest
-from nanobot.agent.tools.context import RequestContext
+from teai_builder.agent.loop import AgentLoop
+from teai_builder.bus.queue import MessageBus
+from teai_builder.providers.base import LLMResponse, ToolCallRequest
+from teai_builder.agent.tools.context import RequestContext
 
 
 class _ContextRecordingTool:

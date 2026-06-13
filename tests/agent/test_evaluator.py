@@ -1,7 +1,7 @@
 import pytest
 
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from nanobot.utils.evaluator import evaluate_response
+from teai_builder.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from teai_builder.utils.evaluator import evaluate_response
 
 
 class DummyProvider(LLMProvider):
