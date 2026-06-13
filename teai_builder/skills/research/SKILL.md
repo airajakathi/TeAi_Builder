@@ -17,8 +17,19 @@ Before searching the web, understand what already exists:
 - Read `docs/architecture.md` — system design and API spec
 - List and read relevant source files — never assume what a file contains
 
-### Step 2: Web research
-For every library, framework, platform, or API you will use:
+### Step 2: Web research — the IDEA first, then the tech
+**2a. Research the idea/product** (do this even for games and "simple" apps — it is
+what makes the result feel real instead of a toy):
+```
+web_search("<product/genre> best examples <current year>")
+web_search("<reference app/competitor> features list")
+web_search("<product type> core mechanics / must-have features")
+web_search("<product type> UX patterns common screens")
+```
+Capture: reference apps, the features users expect, screens/navigation, and what
+makes the good ones good. This feeds the UI/UX and feature sections of `PLAN.md`.
+
+**2b. Research the tech** for every library, framework, platform, or API you will use:
 ```
 web_search("<library/framework> best practices <current year>")
 web_search("<framework> <version> setup guide")
