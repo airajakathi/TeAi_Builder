@@ -90,7 +90,7 @@ systemctl --user stop expo-<name> 2>/dev/null || true
 # Start as a persistent service (won't be killed when exec command ends)
 systemd-run --user --unit=expo-<name> \
   --setenv=REACT_NATIVE_PACKAGER_HOSTNAME=$LAN_IP \
-  bash -c 'cd "/home/sharan/TeaiBuilder Builder/instance/workspace/projects/<name>" && ./node_modules/.bin/expo start --port 8081'
+  bash -c 'cd "/home/sharan/Teai builder/instance/workspace/projects/<name>" && ./node_modules/.bin/expo start --port 8081'
 echo "Expo service started"
 ```
 

@@ -161,7 +161,7 @@ After any build is complete (whether single HTML file or full web app), the CEO 
 
 ```
 # Step 1: Start workspace file server (if not already running)
-exec("pgrep -f 'http.server 9090' > /dev/null || (cd /home/sharan/TeaiBuilder\ Builder/instance/workspace && python3 -m http.server 9090 > /tmp/ws-server.log 2>&1 &) && echo 'Server ready'")
+exec("pgrep -f 'http.server 9090' > /dev/null || (cd /home/sharan/Teai\ builder/instance/workspace && python3 -m http.server 9090 > /tmp/ws-server.log 2>&1 &) && echo 'Server ready'")
 
 # Step 2: Wait 1 second for it to start
 exec("sleep 1 && curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9090/projects/<name>/index.html")

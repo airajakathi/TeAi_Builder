@@ -55,7 +55,7 @@ The gateway does NOT serve workspace files directly. **Always** use the port 909
 
 ```
 # 1. Start workspace file server (exact command — copy this)
-exec("pgrep -f 'http.server 9090' > /dev/null || (cd /home/sharan/TeaiBuilder\\ Builder/instance/workspace && python3 -m http.server 9090 > /tmp/ws-server.log 2>&1 &) && sleep 1 && echo 'Server ready'")
+exec("pgrep -f 'http.server 9090' > /dev/null || (cd /home/sharan/Teai\\ builder/instance/workspace && python3 -m http.server 9090 > /tmp/ws-server.log 2>&1 &) && sleep 1 && echo 'Server ready'")
 
 # 2. Verify it's serving (optional sanity check)
 exec("curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9090/projects/<name>/index.html")

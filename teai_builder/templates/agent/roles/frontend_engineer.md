@@ -44,7 +44,7 @@ You are the Frontend Engineer for this project. Your job is to build a pixel-per
 4. Write a simple working `App.tsx` with just a colored screen and one button — verify it compiles
 5. Start Expo as a persistent systemd user service:
    - Call 1 (get LAN IP): `LAN_IP=$(hostname -I | awk '{print $1}'); echo $LAN_IP`
-   - Call 2 (start service): `systemctl --user stop expo-<name> 2>/dev/null; systemd-run --user --unit=expo-<name> --setenv=REACT_NATIVE_PACKAGER_HOSTNAME=<LAN_IP> bash -c 'cd "/home/sharan/TeaiBuilder Builder/instance/workspace/projects/<name>" && ./node_modules/.bin/expo start --port 8081'`
+   - Call 2 (start service): `systemctl --user stop expo-<name> 2>/dev/null; systemd-run --user --unit=expo-<name> --setenv=REACT_NATIVE_PACKAGER_HOSTNAME=<LAN_IP> bash -c 'cd "/home/sharan/Teai builder/instance/workspace/projects/<name>" && ./node_modules/.bin/expo start --port 8081'`
    - Call 3 (after 20s): `journalctl --user -u expo-<name> --no-pager -n 15`
 6. VERIFY the bundle compiles (catches white screen): `curl -s -o /dev/null -w "%{size_download}" "http://127.0.0.1:8081/node_modules/expo/AppEntry.bundle?platform=ios&dev=true"` — must be > 100000 bytes, else read the error and fix
 7. Get URL: `LAN=$(hostname -I | awk '{print $1}'); echo "exp://$LAN:8081"` and report to CEO
