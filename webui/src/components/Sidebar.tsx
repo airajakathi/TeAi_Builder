@@ -98,27 +98,34 @@ export function Sidebar(props: SidebarProps) {
           collapsed ? "w-14 justify-start" : "justify-between",
         )}
       >
-        <button
-          type="button"
-          aria-label={collapsed ? toggleLabel : undefined}
-          aria-hidden={collapsed ? undefined : true}
-          title={collapsed ? toggleLabel : undefined}
-          onClick={collapsed ? props.onExpand : undefined}
-          tabIndex={collapsed ? 0 : -1}
-          className={cn(
-            "flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl transition-colors",
-            collapsed
-              ? "-ml-0.5 hover:bg-sidebar-accent/75"
-              : "pointer-events-none -ml-0.5",
+        <div className="flex items-center gap-2 min-w-0">
+          <button
+            type="button"
+            aria-label={collapsed ? toggleLabel : undefined}
+            aria-hidden={collapsed ? undefined : true}
+            title={collapsed ? toggleLabel : undefined}
+            onClick={collapsed ? props.onExpand : undefined}
+            tabIndex={collapsed ? 0 : -1}
+            className={cn(
+              "flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl transition-colors",
+              collapsed
+                ? "-ml-0.5 hover:bg-sidebar-accent/75"
+                : "pointer-events-none -ml-0.5",
+            )}
+          >
+            <img
+              src="/brand/teai_builder_icon.png"
+              alt="TeAi Builder"
+              className="h-8 w-8 select-none rounded-[9px] object-contain brand-logo-ring"
+              draggable={false}
+            />
+          </button>
+          {!collapsed && (
+            <span className="brand-wordmark select-none truncate text-[15px] leading-none">
+              TeAi&nbsp;Builder
+            </span>
           )}
-        >
-          <img
-            src="/brand/teai_builder_icon.png"
-            alt=""
-            className="h-8 w-8 select-none object-contain"
-            draggable={false}
-          />
-        </button>
+        </div>
         {!collapsed && !props.hostChromeInset && (
           <Button
             variant="ghost"

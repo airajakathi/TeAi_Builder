@@ -857,6 +857,17 @@ export function ThreadShell({
     </div>
   ) : (
     <div className="flex w-full flex-col items-center text-center animate-in fade-in-0 slide-in-from-bottom-2 duration-500">
+      <div className="mb-7 flex flex-col items-center gap-3.5">
+        <img
+          src="/brand/teai_builder_logo.png"
+          alt="TeAi Builder"
+          className="h-16 w-16 select-none rounded-[18px] object-contain brand-logo-ring sm:h-[72px] sm:w-[72px]"
+          draggable={false}
+        />
+        <span className="brand-wordmark text-[22px] leading-none sm:text-[26px]">
+          TeAi&nbsp;Builder
+        </span>
+      </div>
       <h1 className="text-balance text-[40px] font-normal leading-tight tracking-[-0.045em] text-foreground sm:text-[48px]">
         {t(heroGreetingKey)}
       </h1>
