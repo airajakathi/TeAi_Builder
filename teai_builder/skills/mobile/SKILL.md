@@ -30,6 +30,20 @@ cd <name>
 ```
 This gives you a working `App.tsx` that already runs. **Do not break it.**
 
+**MANDATORY — verify you actually installed the latest SDK/tooling, not outdated cached versions:**
+```bash
+node -p "require('expo/package.json').version"
+npx expo --version
+node -p "require('react-native/package.json').version"
+node -p "require('react/package.json').version"
+```
+If any of these are older than the current stable Expo SDK (as of your build date), **stop and reinstall**:
+```bash
+npx create-expo-app@latest . --template blank-typescript --overwrite
+npx expo install react react-native react-dom react-native-web @expo/metro-runtime
+```
+Record the installed versions in `DECISION_LOG.md`. **Never ship with an outdated SDK.**
+
 **MANDATORY verification — the #1 cause of `ConfigError: Cannot resolve entry file`:**
 ```bash
 # create-expo-app sometimes fails silently (network/interactive prompt). Verify:
@@ -232,6 +246,35 @@ If `npx tsc --noEmit` shows errors:
 2. **Time limit: 5 minutes on TS errors**. If not clean in 5 minutes, use `// @ts-ignore` on the specific line and move on
 3. **Never spend 30+ minutes fixing TS errors before the app even starts**
 4. A working app with some `@ts-ignore` is infinitely better than a broken app with perfect types
+
+---
+
+## Production-Ready Checklist
+
+**MVP ≠ production.** Before declaring an app "ready", verify:
+
+```bash
+# 1. Clean TypeScript build
+npx tsc --noEmit
+
+# 2. No console errors in the bundle
+curl -s "http://127.0.0.1:8081/node_modules/expo/AppEntry.bundle?platform=web&dev=true" | grep -i "uncaught\|error\|undefined is not" || echo "No obvious JS errors in bundle"
+
+# 3. Assets exist and are referenced correctly
+ls assets/ 2>/dev/null || echo "No assets dir — ensure app.json does not reference missing files"
+
+# 4. EAS build configured (for real stores)
+eas build:configure
+eas build --platform all --profile preview
+```
+
+Required before shipping:
+- [ ] No `undefined` component imports / runtime errors
+- [ ] All assets referenced in `app.json` exist on disk
+- [ ] `eas.json` exists with at least a `preview` and `production` profile
+- [ ] App handles offline/poor network gracefully (loading states, retry)
+- [ ] No hardcoded secrets/API keys
+- [ ] Version + build number bumped in `app.json`
 
 ---
 

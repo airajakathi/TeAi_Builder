@@ -42,6 +42,23 @@ Anchor on current, stable information. Do not rely on training data alone for:
 - Security recommendations
 - Package versions
 
+**MANDATORY — Resolve the CURRENT/LATEST versions BEFORE scaffolding or installing:**
+For Expo/React Native projects, explicitly search for and record:
+- Current stable Expo SDK version (`npx expo --version` and current release notes)
+- Supported React Native version for that SDK
+- Current `create-expo-app` latest release
+- Current recommended Node.js LTS version
+
+Example web searches:
+```
+web_search("Expo SDK latest version 2026")
+web_search("Expo SDK 54 React Native version")
+web_search("create-expo-app latest version")
+web_search("Node.js LTS version 2026")
+web_search("React Native latest stable version 2026")
+```
+Record the exact versions in `RESEARCH.md` and in the project's `DECISION_LOG.md`. If installed versions differ, align them before writing code. **Never build on an outdated SDK.**
+
 ### Step 3: Write RESEARCH.md
 Copy the template: `read_file("RESEARCH.md")`
 Write to: `projects/<name>/research/<role>.md`

@@ -209,18 +209,18 @@ function MobileView({ item }: { item: CanvasItem }) {
         <div className="flex flex-col items-center gap-2 shrink-0">
           <div className="relative"
             style={{
-              width: 230, height: 460,
+              width: 360, height: 720,
               background: "#1a1a1a",
-              borderRadius: 38,
-              border: "6px solid #333",
-              padding: 8,
-              boxShadow: "0 0 40px rgba(76,142,247,0.25), 0 0 0 1px #555",
+              borderRadius: 54,
+              border: "10px solid #333",
+              padding: 12,
+              boxShadow: "0 0 60px rgba(76,142,247,0.35), 0 0 0 1px #555",
             }}>
             <div style={{
-              position: "absolute", top: 13, left: "50%", transform: "translateX(-50%)",
-              width: 64, height: 6, background: "#333", borderRadius: 3, zIndex: 10,
+              position: "absolute", top: 18, left: "50%", transform: "translateX(-50%)",
+              width: 90, height: 8, background: "#333", borderRadius: 4, zIndex: 10,
             }} />
-            <div style={{ width: "100%", height: "100%", borderRadius: 30, overflow: "hidden", background: "#fff" }}>
+            <div style={{ width: "100%", height: "100%", borderRadius: 44, overflow: "hidden", background: "#fff" }}>
               <iframe
                 src={webPreviewUrl}
                 title="Live App Preview"
