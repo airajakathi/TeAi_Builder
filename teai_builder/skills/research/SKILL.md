@@ -32,7 +32,7 @@ Anchor on current, stable information. Do not rely on training data alone for:
 - Package versions
 
 ### Step 3: Write RESEARCH.md
-Copy the template: `read_file("teai_builder/teai_builder/templates/RESEARCH.md")`
+Copy the template: `read_file("RESEARCH.md")`
 Write to: `projects/<name>/research/<role>.md`
 
 Fill in:

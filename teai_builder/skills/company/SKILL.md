@@ -37,8 +37,8 @@ Read the user's request and classify it:
 1. Call `long_task` immediately with the project goal
 2. Create project folder: `write_file("projects/<name>/RESEARCH.md", ...)` (workspace-relative, NOT instance/workspace/projects/...)
 3. Copy templates using workspace-relative paths:
-   - `read_file("teai_builder/teai_builder/templates/PROJECT.md")` → `write_file("projects/<name>/PROJECT.md", ...)`
-   - `read_file("teai_builder/teai_builder/templates/DECISION_LOG.md")` → write to project
+   - `read_file("PROJECT.md")` → `write_file("projects/<name>/PROJECT.md", ...)`
+   - `read_file("DECISION_LOG.md")` → write to project
 
 **CRITICAL — Path Rule**: The workspace is already the workspace directory. File paths MUST be workspace-relative:
 - WRONG: `write_file("instance/workspace/projects/game/index.html", ...)`  

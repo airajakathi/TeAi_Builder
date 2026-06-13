@@ -132,10 +132,10 @@ projects/<name>/
   tests/               # test suite
 ```
 
-Copy templates from:
-- `read_file` the path `teai_builder/teai_builder/templates/PROJECT.md`
-- `read_file` the path `teai_builder/teai_builder/templates/DECISION_LOG.md`
-- `read_file` the path `teai_builder/teai_builder/templates/RESEARCH.md`
+Copy templates from these workspace-root files (already present in the workspace):
+- `read_file` the path `PROJECT.md`
+- `read_file` the path `DECISION_LOG.md`
+- `read_file` the path `RESEARCH.md`
 
 ## Canvas Workspace Panel
 
