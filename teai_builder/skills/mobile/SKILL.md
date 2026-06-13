@@ -170,6 +170,33 @@ echo "Native bundle size: $NSIZE bytes"
 - A healthy bundle is **hundreds of KB to several MB**.
 - Common white-screen cause: missing asset in `app.json` (see Step 2b) or a runtime error in `App.tsx`.
 
+### Step 5b: VERIFY the UI actually renders (white-screen check)
+
+**A 200 OK bundle does NOT mean the UI renders. Do this check BEFORE reporting success.**
+
+Pick ONE of:
+- **Headless check (preferred when no real browser is available):** write a tiny `smoke-test.js` in the project root:
+```js
+// smoke-test.js — loads the served web bundle URL and reports console errors + root children count
+const http = require('http');
+const url = process.argv[2] || 'http://127.0.0.1:8081/';
+http.get(url, (res) => {
+  let html = '';
+  res.on('data', (chunk) => { html += chunk; });
+  res.on('end', () => {
+    const hasBody = /<body[^>]*>/i.test(html) && html.replace(/<body[^>]*>/i, '').trim().length > 0;
+    console.log('status:', res.statusCode, 'hasBody:', hasBody, 'bytes:', Buffer.byteLength(html));
+    process.exit(res.statusCode === 200 && hasBody ? 0 : 2);
+  });
+}).on('error', (err) => { console.error('smoke-test error:', err.message); process.exit(3); });
+```
+```bash
+node smoke-test.js "http://127.0.0.1:8081/"
+```
+- **Canvas/live-preview check:** open `http://127.0.0.1:8081` and confirm the app UI is visible, not a blank page. If it is blank, inspect `App.tsx` for components imported from the wrong package (especially gesture handlers from `'react-native'`) or a runtime exception in the top-level component.
+
+Never mark delivery as successful after only the bundle-size check.
+
 ### Step 6: Show in canvas (live preview + QR together)
 ```bash
 LAN_IP=$(hostname -I | awk '{print $1}'); echo "exp://$LAN_IP:8081"
