@@ -211,6 +211,8 @@ If `npx tsc --noEmit` shows errors:
 ## Common Mistakes That Cause Failures
 
 - ❌ **`package.json` `"main"` left as `"index.js"` after a manual `npm init` (no such file)** → `ConfigError: Cannot resolve entry file` and a broken preview. Set `"main": "expo/AppEntry.js"`.
+- ❌ **Importing `PanGestureHandler`/`GestureDetector`/`PanGestureHandlerGestureEvent` from `'react-native'`** → they don't exist there (they're in `react-native-gesture-handler`), so the component is `undefined` → **runtime white screen that bundles fine and passes the size check.** Import gesture components from `react-native-gesture-handler`, and wrap the app in `GestureHandlerRootView`.
+- ⚠️ **A 200 OK bundle of several MB does NOT mean the UI renders.** A bad import or a render-time exception still produces a blank screen. After the bundle check, scan `App.tsx` for components used but not imported (or imported from the wrong package), and check the Metro/`/tmp/expo-<name>.log` for `Unable to resolve`/`is not defined` warnings before declaring success.
 - ❌ **Hand-pinning native dep versions (`npm install react-native@0.73`)** → peer-dependency conflicts and runtime crashes. Use `npx expo install`.
 - ❌ **Relying on `systemd-run --user` in a headless/container env** → "Failed to connect to bus". Fall back to `setsid`.
 - ❌ **Referencing `./assets/icon.png` etc. in app.json when the files don't exist** → white screen
