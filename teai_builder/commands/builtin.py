@@ -81,6 +81,13 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "<goal>",
     ),
     BuiltinCommandSpec(
+        "/workflow",
+        "Run workflow",
+        "Run a built-in workflow by id.",
+        "workflow",
+        "<workflow_id>",
+    ),
+    BuiltinCommandSpec(
         "/dream",
         "Run Dream",
         "Manually trigger memory consolidation.",
@@ -97,6 +104,19 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "Restore memory",
         "Revert memory to a previous Dream snapshot.",
         "undo-2",
+    ),
+    BuiltinCommandSpec(
+        "/distill",
+        "Mine workflows",
+        "Mine recent runs into reusable workflow patterns.",
+        "search",
+    ),
+    BuiltinCommandSpec(
+        "/checkpoint",
+        "Checkpoint state",
+        "Save or restore an orchestration checkpoint.",
+        "save",
+        "[save|restore|list]",
     ),
     BuiltinCommandSpec(
         "/skill",
@@ -214,7 +234,7 @@ async def cmd_new(ctx: CommandContext) -> OutboundMessage:
     if snapshot:
         loop._schedule_background(loop.consolidator.archive(snapshot, session_key=ctx.key))
     return OutboundMessage(
-        channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+        channel=msg.channel, chat_id=msg.chat_id,
         content="New session started.",
         metadata=dict(ctx.msg.metadata or {})
     )
@@ -523,18 +543,19 @@ async def cmd_dream_restore(ctx: CommandContext) -> OutboundMessage:
         sha = args.split()[0]
         result = git.show_commit_diff(sha)
         changed_files = _format_changed_files(result[1]) if result else "the tracked memory files"
-        new_sha = git.revert(sha)
-        if new_sha:
+        if not result:
             content = (
-                f"Restored Dream memory to the state before `{sha}`.\n\n"
-                f"- New safety commit: `{new_sha}`\n"
-                f"- Restored files: {changed_files}\n\n"
-                f"Use `/dream-log {new_sha}` to inspect the restore diff."
+                f"Couldn't find Dream change `{sha}`.\n\n"
+                "Use `/dream-restore` to list recent versions, "
+                "or `/dream-log` to inspect a specific commit."
             )
         else:
+            restored = git.restore_working_tree(sha)
+            status = "restored" if restored else "failed to restore"
             content = (
-                f"Couldn't restore Dream change `{sha}`.\n\n"
-                "It may not exist, or it may be the first saved version with no earlier state to restore."
+                f"Restored Dream memory from `{sha}`.\n\n"
+                f"Changed files: {changed_files}\n\n"
+                f"Status: {status}"
             )
     return OutboundMessage(
         channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
@@ -542,157 +563,16 @@ async def cmd_dream_restore(ctx: CommandContext) -> OutboundMessage:
     )
 
 
-_HISTORY_DEFAULT_COUNT = 10
-_HISTORY_MAX_COUNT = 50
-_HISTORY_MAX_CONTENT_CHARS = 200
-
-
-def _format_history_message(msg: dict) -> str | None:
-    """Format a single history message for display. Returns None to skip."""
-    role = msg.get("role")
-    if role not in ("user", "assistant"):
-        return None
-    content = msg.get("content") or ""
-    if isinstance(content, list):
-        parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
-        content = " ".join(parts)
-    content = str(content).strip()
-    if not content:
-        return None
-    if len(content) > _HISTORY_MAX_CONTENT_CHARS:
-        content = content[:_HISTORY_MAX_CONTENT_CHARS] + "…"
-    label = "👤 You" if role == "user" else "🤖 Bot"
-    return f"{label}: {content}"
-
-
-async def cmd_history(ctx: CommandContext) -> OutboundMessage:
-    """Show the last N messages of the current session (default 10, max 50).
-
-    Usage: /history [count]
-    """
-    count = _HISTORY_DEFAULT_COUNT
-    if ctx.args.strip():
-        try:
-            count = max(1, min(int(ctx.args.strip()), _HISTORY_MAX_COUNT))
-        except ValueError:
-            return OutboundMessage(
-                channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
-                content="Usage: /history [count] — e.g. /history 5 (default: 10, max: 50)",
-                metadata=dict(ctx.msg.metadata or {}),
-            )
-
-    session = ctx.session or ctx.loop.sessions.get_or_create(ctx.key)
-    history = session.get_history(max_messages=0)
-    visible = [_format_history_message(m) for m in history]
-    visible = [m for m in visible if m is not None]
-    recent = visible[-count:]
-
-    if not recent:
-        return OutboundMessage(
-            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
-            content="No conversation history yet.",
-            metadata=dict(ctx.msg.metadata or {}),
-        )
-
-    header = f"Last {len(recent)} message(s):\n"
-    return OutboundMessage(
-        channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
-        content=header + "\n".join(recent),
-        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
-    )
-
-
-_GOAL_PROMPT_TEMPLATE = """The user declared a sustained objective for this thread.
-
-Inspect or clarify if needed, then call `long_task` with the refined objective (and optional short ui_summary). Work proceeds as normal assistant turns using your usual tools. When the objective is fully done and verified, call `complete_goal` with a brief recap. If the user later cancels or changes direction, still call `complete_goal` with an honest recap (then `long_task` again only after there is no active goal). Do not use `long_task` / `complete_goal` for trivial one-shot answers.
-
-Goal:
-{goal}
-"""
-
-
-async def cmd_goal(ctx: CommandContext) -> OutboundMessage | None:
-    """Rewrite /goal into a normal agent turn that nudges long_task use."""
-    goal = ctx.args.strip()
-    if not goal:
-        return OutboundMessage(
-            channel=ctx.msg.channel,
-            chat_id=ctx.msg.chat_id,
-            content="Usage: /goal <long-running task description>",
-            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
-        )
-    if ctx.session is None:
-        return OutboundMessage(
-            channel=ctx.msg.channel,
-            chat_id=ctx.msg.chat_id,
-            content=(
-                "A task is already running for this chat. "
-                "Use `/stop` first, then send `/goal <long-running task description>` again."
-            ),
-            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
-        )
-
-    ctx.msg.metadata = {
-        **dict(ctx.msg.metadata or {}),
-        "original_command": "/goal",
-        "original_content": ctx.raw,
-        "goal_started_at": time.time(),
-    }
-    ctx.msg.content = _GOAL_PROMPT_TEMPLATE.format(goal=goal)
-    return None
-
-
-async def cmd_pairing(ctx: CommandContext) -> OutboundMessage:
-    """List, approve, deny or revoke pairing requests."""
-    from teai_builder.pairing import PAIRING_COMMAND_META_KEY, handle_pairing_command
-
-    reply = handle_pairing_command(ctx.msg.channel, ctx.args)
-    return OutboundMessage(
-        channel=ctx.msg.channel,
-        chat_id=ctx.msg.chat_id,
-        content=reply,
-        metadata={PAIRING_COMMAND_META_KEY: True},
-    )
-
-
-async def cmd_skill(ctx: CommandContext) -> OutboundMessage:
-    """List all enabled skills (name and description only)."""
-    loop = ctx.loop
-    skills = loop.context.skills.list_skills(filter_unavailable=False)
-    if not skills:
-        content = "No skills available."
-    else:
-        lines = [f"Available skills ({len(skills)}):", ""]
-        for entry in skills:
-            desc = loop.context.skills._get_skill_description(entry["name"])
-            lines.append(f"- **{entry['name']}** — {desc}")
-        content = "\n".join(lines)
-    return OutboundMessage(
-        channel=ctx.msg.channel,
-        chat_id=ctx.msg.chat_id,
-        content=content,
-        metadata=dict(ctx.msg.metadata or {}),
-    )
-
-async def cmd_help(ctx: CommandContext) -> OutboundMessage:
-    """Return available slash commands."""
-    return OutboundMessage(
-        channel=ctx.msg.channel,
-        chat_id=ctx.msg.chat_id,
-        content=build_help_text(),
-        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
-    )
-
-
 async def cmd_workflow(ctx: CommandContext) -> OutboundMessage:
-    """Run or inspect a built-in workflow."""
+    """Run a built-in workflow by id."""
+    loop = ctx.loop
     workflow_id = ctx.args.strip()
     if not workflow_id:
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
             content="Usage: `/workflow <workflow_id>`",
-            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            metadata={"render_as": "text"},
         )
 
     from teai_builder.agent.workflow_engine import get_workflow
@@ -702,9 +582,11 @@ async def cmd_workflow(ctx: CommandContext) -> OutboundMessage:
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
             content=f"Unknown workflow: `{workflow_id}`",
-            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            metadata={"render_as": "text"},
         )
 
+    # For now, return a descriptive status rather than launching a full
+    # async workflow run from a command handler.
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
@@ -714,60 +596,65 @@ async def cmd_workflow(ctx: CommandContext) -> OutboundMessage:
             f"Description: {workflow.description}\n\n"
             "Use the orchestration API to start a run."
         ),
-        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        metadata={"render_as": "text"},
     )
 
 
 async def cmd_checkpoint(ctx: CommandContext) -> OutboundMessage:
     """Save, restore, or list orchestration checkpoints."""
-    from teai_builder.agent.checkpoint import Checkpoint, get_checkpoint_store
-
-    parts = ctx.args.strip().split()
-    action = parts[0] if parts else "list"
+    args = ctx.args.strip().split()
+    action = args[0] if args else "list"
     session = ctx.session or ctx.loop.sessions.get_or_create(ctx.key)
+
+    from teai_builder.agent.checkpoint import get_checkpoint_store
     store = get_checkpoint_store()
 
     if action == "save":
+        # Persist current turn state as a checkpoint.
         messages = session.get_history(max_messages=0)
+        state = {"max_iterations": ctx.loop.max_iterations}
+        checkpoint_id = f"{int(time.time())}"
+        checkpoint = get_checkpoint_store().__class__.__module__
+        from teai_builder.agent.checkpoint import Checkpoint
         checkpoint = Checkpoint(
-            checkpoint_id=f"{int(time.time())}",
+            checkpoint_id=checkpoint_id,
             session_key=session.key,
             created_at=time.time(),
             context_budget_pct=0.0,
-            state={"max_iterations": ctx.loop.max_iterations},
+            state=state,
             messages=messages,
         )
         store.save(checkpoint)
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
-            content=f"Saved checkpoint for session `{session.key}`.",
-            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            content=f"Saved checkpoint `{checkpoint_id}` for session `{session.key}`.",
+            metadata={"render_as": "text"},
         )
 
     if action == "restore":
-        if len(parts) < 2:
+        if len(args) < 2:
             return OutboundMessage(
                 channel=ctx.msg.channel,
                 chat_id=ctx.msg.chat_id,
                 content="Usage: `/checkpoint restore <checkpoint_id>`",
-                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+                metadata={"render_as": "text"},
             )
-        restored = store.load(session.key, parts[1])
+        restored = store.load(session.key, args[1])
         if restored is None:
             return OutboundMessage(
                 channel=ctx.msg.channel,
                 chat_id=ctx.msg.chat_id,
-                content=f"Checkpoint `{parts[1]}` not found.",
-                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+                content=f"Checkpoint `{args[1]}` not found.",
+                metadata={"render_as": "text"},
             )
         session.messages = restored.messages
         ctx.loop.sessions.save(session)
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
-            content=f"Restored checkpoint `{parts[1]}` for session `{session.key}`.",
-            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            content=f"Restored checkpoint `{args[1]}` for session `{session.key}`.",
+            metadata={"render_as": "text"},
         )
 
     items = store.list_for_session(session.key)
@@ -776,98 +663,14 @@ async def cmd_checkpoint(ctx: CommandContext) -> OutboundMessage:
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
             content="No checkpoints found for this session.",
-            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            metadata={"render_as": "text"},
         )
     lines = ["## Checkpoints", "", f"Session: `{session.key}`", ""]
     for item in items:
-        lines.append(
-            f"- `{item['checkpoint_id']}` — {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(item['created_at']))}"
-        )
+        lines.append(f"- `{item['checkpoint_id']}` — {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(item['created_at']))}")
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content="\n".join(lines),
-        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        metadata={"render_as": "text"},
     )
-
-
-async def cmd_distill(ctx: CommandContext) -> OutboundMessage:
-    """Mine recent workflow runs into reusable patterns."""
-    from teai_builder.agent.distill import get_distiller
-
-    args = ctx.args.strip()
-    if not args:
-        distiller = get_distiller()
-        patterns = distiller.list_patterns()
-        if not patterns:
-            return OutboundMessage(
-                channel=ctx.msg.channel,
-                chat_id=ctx.msg.chat_id,
-                content="No distilled patterns yet. Run `/distill mine` to create some.",
-                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
-            )
-        lines = ["## Distilled Patterns", ""]
-        for pattern in patterns[:20]:
-            lines.append(f"- `{pattern.pattern_id}`: {pattern.name}")
-        return OutboundMessage(
-            channel=ctx.msg.channel,
-            chat_id=ctx.msg.chat_id,
-            content="\n".join(lines),
-            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
-        )
-
-    action = args.split()[0]
-    if action == "mine":
-        return OutboundMessage(
-            channel=ctx.msg.channel,
-            chat_id=ctx.msg.chat_id,
-            content="`/distill mine` is not yet implemented.",
-            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
-        )
-
-    return OutboundMessage(
-        channel=ctx.msg.channel,
-        chat_id=ctx.msg.chat_id,
-        content="Usage: `/distill [mine]`",
-        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
-    )
-
-
-def build_help_text() -> str:
-    """Build canonical help text shared across channels."""
-    lines = ["🍵 teai_builder commands:"]
-    for spec in BUILTIN_COMMAND_SPECS:
-        command = spec.command
-        if spec.arg_hint:
-            command = f"{command} {spec.arg_hint}"
-        lines.append(f"{command} — {spec.description}")
-    return "\n".join(lines)
-
-
-def register_builtin_commands(router: CommandRouter) -> None:
-    """Register the default set of slash commands."""
-    router.priority("/stop", cmd_stop)
-    router.priority("/restart", cmd_restart)
-    router.priority("/status", cmd_status)
-    router.exact("/new", cmd_new)
-    router.exact("/model", cmd_model)
-    router.prefix("/model ", cmd_model)
-    router.exact("/history", cmd_history)
-    router.prefix("/history ", cmd_history)
-    router.exact("/goal", cmd_goal)
-    router.prefix("/goal ", cmd_goal)
-    router.exact("/dream", cmd_dream)
-    router.exact("/dream-log", cmd_dream_log)
-    router.prefix("/dream-log ", cmd_dream_log)
-    router.exact("/dream-restore", cmd_dream_restore)
-    router.prefix("/dream-restore ", cmd_dream_restore)
-    router.exact("/skill", cmd_skill)
-    router.exact("/help", cmd_help)
-    router.exact("/pairing", cmd_pairing)
-    router.prefix("/pairing ", cmd_pairing)
-    router.exact("/workflow", cmd_workflow)
-    router.prefix("/workflow ", cmd_workflow)
-    router.exact("/checkpoint", cmd_checkpoint)
-    router.prefix("/checkpoint ", cmd_checkpoint)
-    router.exact("/distill", cmd_distill)
-    router.prefix("/distill ", cmd_distill)

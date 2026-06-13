@@ -619,3 +619,53 @@ export async function updateTranscriptionSettings(
     token,
   );
 }
+
+export async function listWorkflows(
+  token: string,
+  base: string = "",
+): Promise<{ workflows: Array<{ workflow_id: string; name: string; description?: string }> }> {
+  return request<{ workflows: Array<{ workflow_id: string; name: string; description?: string }> }>(
+    `${base}/api/workflows`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function createCheckpoint(
+  token: string,
+  sessionKey: string,
+  base: string = "",
+): Promise<{ checkpoint_id: string }> {
+  return request<{ checkpoint_id: string }>(
+    `${base}/api/sessions/${encodeURIComponent(sessionKey)}/checkpoints`,
+    token,
+    { method: "POST" },
+  );
+}
+
+export async function listCheckpoints(
+  token: string,
+  sessionKey: string,
+  base: string = "",
+): Promise<{ items: Array<{ checkpoint_id: string; created_at: number }> }> {
+  return request<{ items: Array<{ checkpoint_id: string; created_at: number }> }>(
+    `${base}/api/sessions/${encodeURIComponent(sessionKey)}/checkpoints`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function restoreCheckpoint(
+  token: string,
+  sessionKey: string,
+  checkpointId: string,
+  base: string = "",
+): Promise<{ restored: boolean }> {
+  return request<{ restored: boolean }>(
+    `${base}/api/sessions/${encodeURIComponent(sessionKey)}/checkpoints/${encodeURIComponent(checkpointId)}/restore`,
+    token,
+    { method: "POST" },
+  );
+}

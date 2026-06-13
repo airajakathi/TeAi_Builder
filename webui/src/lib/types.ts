@@ -147,6 +147,23 @@ export interface SkillDetail extends SkillSummary {
 
 export interface SkillsPayload { skills: SkillSummary[]; }
 
+export interface WorkflowSummary {
+  workflow_id: string;
+  name: string;
+  description?: string;
+}
+
+export interface WorkflowsPayload { workflows: WorkflowSummary[]; }
+
+export interface CheckpointSummary {
+  checkpoint_id: string;
+  created_at: number;
+}
+
+export interface CheckpointsPayload { items: CheckpointSummary[]; }
+
+export interface CheckpointRestoreResult { restored: boolean; }
+
 /** Structured UI blob on ``progress`` WS frames; channels may add more ``kind`` values later. */
 export interface AgentUIBlob {
   kind: string;

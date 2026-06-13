@@ -18,18 +18,23 @@ from loguru import logger
 from teai_builder.agent import context as agent_context
 from teai_builder.agent import model_presets as preset_helpers
 from teai_builder.agent.autocompact import AutoCompact
+from teai_builder.agent.checkpoint import Checkpoint, get_checkpoint_store
 from teai_builder.agent.context import ContextBuilder
 from teai_builder.agent.cron_turns import CronTurnCoordinator
+from teai_builder.agent.goal_validator import Goal, ValidationResult, get_goal_validator
 from teai_builder.agent.hook import AgentHook, CompositeHook
 from teai_builder.agent.memory import Consolidator
+from teai_builder.agent.parallel_executor import ParallelExecutor, ParallelTask
 from teai_builder.agent.progress_hook import AgentProgressHook
 from teai_builder.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from teai_builder.agent.subagent import SubagentManager
+from teai_builder.agent.task_dependencies import DependencyGraph, TaskNode
 from teai_builder.agent.tools.context import RequestContext, bind_request_context, reset_request_context
 from teai_builder.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
 from teai_builder.agent.tools.message import MessageTool
 from teai_builder.agent.tools.registry import ToolRegistry
 from teai_builder.agent.tools.self import MyTool
+from teai_builder.agent.workflow_engine import WorkflowEngine
 from teai_builder.bus.events import InboundMessage, OutboundMessage
 from teai_builder.bus.progress import build_bus_progress_callback
 from teai_builder.bus.queue import MessageBus
