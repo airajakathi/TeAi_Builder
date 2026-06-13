@@ -70,6 +70,9 @@ export function useSessions(): {
     try {
       setLoading(true);
       const rows = await listSessions(tokenRef.current);
+      if (import.meta.env?.DEV) {
+        console.debug("[sidebar-debug] raw sessions", rows.map(({ key, workspaceScope }) => ({ key, workspaceScope })));
+      }
       const serverKeys = new Set(rows.map((row) => row.key));
       setSessions((prev) => [
         ...rows,

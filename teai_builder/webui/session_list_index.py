@@ -24,7 +24,7 @@ from teai_builder.session.manager import (
     _metadata_title,
 )
 
-_INDEX_VERSION = 1
+_INDEX_VERSION = 2
 _INDEX_FILENAME = ".webui_session_index.json"
 
 
@@ -121,7 +121,7 @@ def _indexed_row_matches_file(row: dict[str, Any], path: Path) -> bool:
 
 
 def _public_row(sessions_dir: Path, row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "key": row.get("key"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
@@ -129,6 +129,10 @@ def _public_row(sessions_dir: Path, row: dict[str, Any]) -> dict[str, Any]:
         "preview": row.get("preview", ""),
         "path": str(sessions_dir / str(row.get("file", ""))),
     }
+    scope = row.get("workspace_scope")
+    if isinstance(scope, dict):
+        payload["workspace_scope"] = scope
+    return payload
 
 
 def _preview_from_messages(messages: list[dict[str, Any]]) -> str:
@@ -157,15 +161,19 @@ def _preview_from_messages(messages: list[dict[str, Any]]) -> str:
 
 def _indexed_row_for_session(session: Session, path: Path) -> dict[str, Any]:
     signature = _file_signature(path)
+    metadata = session.metadata if isinstance(session.metadata, dict) else {}
+    raw_scope = metadata.get("workspace_scope")
+    scope_payload = raw_scope if isinstance(raw_scope, dict) else None
     return {
         "key": session.key,
         "created_at": session.created_at.isoformat(),
         "updated_at": session.updated_at.isoformat(),
-        "title": _metadata_title(session.metadata),
+        "title": _metadata_title(metadata),
         "preview": _preview_from_messages(session.messages),
         "file": path.name,
         "mtime_ns": signature["mtime_ns"],
         "size": signature["size"],
+        "workspace_scope": scope_payload,
     }
 
 
@@ -207,15 +215,19 @@ def _scan_session_row(session_manager: SessionManager, path: Path) -> dict[str, 
                 if not fallback_preview and item.get("role") == "assistant":
                     fallback_preview = text
             signature = _file_signature(path)
+            metadata = data.get("metadata", {}) if isinstance(data.get("metadata"), dict) else {}
+            raw_scope = metadata.get("workspace_scope")
+            scope_payload = raw_scope if isinstance(raw_scope, dict) else None
             return {
                 "key": data.get("key") or fallback_key,
                 "created_at": data.get("created_at"),
                 "updated_at": data.get("updated_at"),
-                "title": _metadata_title(data.get("metadata", {})),
+                "title": _metadata_title(metadata),
                 "preview": preview or fallback_preview,
                 "file": path.name,
                 "mtime_ns": signature["mtime_ns"],
                 "size": signature["size"],
+                "workspace_scope": scope_payload,
             }
     except Exception:
         repaired = session_manager._repair(fallback_key)

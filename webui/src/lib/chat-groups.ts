@@ -8,7 +8,7 @@ export interface SessionGroup {
   id: string;
   label: string;
   sessions: ChatSummary[];
-  kind?: "project";
+  kind?: "project" | "general";
   projectPath?: string;
   projectKey?: string;
   updatedAt?: string | null;
@@ -23,6 +23,7 @@ export interface ChatGroupLabels {
   archived: string;
   projects: string;
   fallbackTitle: string;
+  general: string;
 }
 
 export interface ChatGroupingOptions {
@@ -40,90 +41,148 @@ export function groupSessions(
   labels: ChatGroupLabels,
   options: ChatGroupingOptions,
 ): SessionGroup[] {
-  if (sessions.some((session) => session.workspaceScope?.project_path)) {
-    return groupSessionsByProject(sessions, labels, options);
-  }
+  const pinnedKeys = new Set(options.pinnedKeys);
+  const archivedKeys = new Set(options.archivedKeys);
+  const defaultWorkspacePath = options.defaultWorkspacePath || "";
 
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
-  const buckets = new Map<string, ChatSummary[]>();
-  const pinned = new Set(options.pinnedKeys);
-  const archived = new Set(options.archivedKeys);
-
-  const pinnedSessions: ChatSummary[] = [];
-  const archivedSessions: ChatSummary[] = [];
-  const normalSessions: ChatSummary[] = [];
+  const pinned: ChatSummary[] = [];
+  const archived: ChatSummary[] = [];
+  const projectBuckets = new Map<
+    string,
+    { path: string; label: string; sessions: ChatSummary[]; updatedAt: string | null }
+  >();
+  const general: ChatSummary[] = [];
 
   for (const session of sessions) {
-    if (archived.has(session.key)) {
-      if (options.showArchived) archivedSessions.push(session);
+    if (archivedKeys.has(session.key)) {
+      archived.push(session);
       continue;
     }
-    if (pinned.has(session.key)) {
-      pinnedSessions.push(session);
+    if (pinnedKeys.has(session.key)) {
+      pinned.push(session);
       continue;
     }
-    if (options.sort === "title_asc") {
-      normalSessions.push(session);
+    const scope = session.workspaceScope;
+    const path = scope?.project_path || "";
+    if (path && !sameWorkspacePath(path, defaultWorkspacePath)) {
+      const key = normalizeWorkspacePath(path);
+      const label = options.projectNameOverrides[key]?.trim()
+        || scope?.project_name?.trim()
+        || projectNameFromPath(path);
+      const bucket = projectBuckets.get(key) ?? {
+        path,
+        label,
+        sessions: [],
+        updatedAt: null,
+      };
+      bucket.sessions.push(session);
+      const candidate = session.updatedAt ?? session.createdAt ?? null;
+      if (isNewerDate(candidate, bucket.updatedAt)) {
+        bucket.updatedAt = candidate;
+      }
+      projectBuckets.set(key, bucket);
       continue;
     }
-    const timestamp = Date.parse(session.updatedAt ?? session.createdAt ?? "");
-    const label = Number.isFinite(timestamp) && timestamp >= startOfToday
-      ? labels.today
-      : Number.isFinite(timestamp) && timestamp >= startOfYesterday
-        ? labels.yesterday
-        : labels.earlier;
-    const bucket = buckets.get(label) ?? [];
-    bucket.push(session);
-    buckets.set(label, bucket);
+    general.push(session);
   }
 
-  const groups: SessionGroup[] = [labels.today, labels.yesterday, labels.earlier]
-    .map((label) => ({
-      id: `date:${label}`,
-      label,
-      sessions: sortSessions(
-        buckets.get(label) ?? [],
-        options.sort,
-        options.titleOverrides,
-      ),
-    }))
-    .filter((group) => group.sessions.length > 0);
+  const groups: SessionGroup[] = [];
 
-  if (options.sort === "title_asc" && normalSessions.length) {
+  if (pinned.length) {
     groups.push({
-      id: "date:all",
-      label: labels.all,
-      sessions: sortSessions(
-        normalSessions,
-        options.sort,
-        options.titleOverrides,
-      ),
-    });
-  }
-  if (pinnedSessions.length) {
-    groups.unshift({
       id: "pinned",
       label: labels.pinned,
-      sessions: sortSessions(
-        pinnedSessions,
-        options.sort,
-        options.titleOverrides,
-      ),
+      sessions: sortSessions(pinned, options.sort, options.titleOverrides),
     });
   }
-  if (archivedSessions.length) {
+
+  const projectGroups = Array.from(projectBuckets.entries()).map(([key, bucket]) => ({
+    id: `project:${key}`,
+    label: bucket.label,
+    kind: "project" as const,
+    projectPath: bucket.path,
+    projectKey: key,
+    updatedAt: bucket.updatedAt,
+    sessions: sortProjectSessions(
+      bucket.sessions,
+      options.sort,
+      options.titleOverrides,
+      pinnedKeys,
+      archivedKeys,
+    ),
+  }));
+  projectGroups.sort((a, b) => {
+    const timeOrder = dateToTime(b.updatedAt) - dateToTime(a.updatedAt);
+    if (timeOrder !== 0) return timeOrder;
+    return a.label.localeCompare(b.label, "en", { numeric: true, sensitivity: "base" });
+  });
+  groups.push(...projectGroups);
+
+  if (general.length) {
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
+    const buckets = new Map<string, ChatSummary[]>();
+    const byDate: ChatSummary[] = [];
+    for (const session of general) {
+      if (options.sort === "title_asc") {
+        byDate.push(session);
+        continue;
+      }
+      const timestamp = Date.parse(session.updatedAt ?? session.createdAt ?? "");
+      const label = Number.isFinite(timestamp) && timestamp >= startOfToday
+        ? labels.today
+        : Number.isFinite(timestamp) && timestamp >= startOfYesterday
+          ? labels.yesterday
+          : labels.earlier;
+      const bucket = buckets.get(label) ?? [];
+      bucket.push(session);
+      buckets.set(label, bucket);
+    }
+
+    const dateGroups = [labels.today, labels.yesterday, labels.earlier]
+      .map((label) => ({
+        id: `general:${label}`,
+        label,
+        kind: "general" as const,
+        sessions: sortSessions(
+          buckets.get(label) ?? [],
+          options.sort,
+          options.titleOverrides,
+        ),
+      }))
+      .filter((group) => group.sessions.length > 0);
+
+    if (options.sort === "title_asc" && byDate.length) {
+      dateGroups.push({
+        id: "general:all",
+        label: labels.all,
+        kind: "general" as const,
+        sessions: sortSessions(byDate, options.sort, options.titleOverrides),
+      });
+    }
+
+    groups.push({
+      id: "general",
+      label: labels.fallbackTitle.replace(/^new chat$/i, "General").replace(/^new/i, "General"),
+      sessions: [],
+      kind: "general",
+    });
+    groups.push(...dateGroups);
+  }
+
+  if (archived.length && options.showArchived) {
     groups.push({
       id: "archived",
       label: labels.archived,
       sessions: sortSessions(
-        archivedSessions,
+        archived,
         options.sort,
         options.titleOverrides,
       ),
     });
   }
+
   return groups;
 }
 
@@ -180,7 +239,11 @@ export function isCollapsedProject(
 }
 
 export function isFoldableChatsGroup(group: SessionGroup): boolean {
-  return group.id === "workspace:chats" || group.id === "date:all";
+  return (
+    group.id === "workspace:chats"
+    || group.id === "date:all"
+    || group.id.startsWith("general:")
+  );
 }
 
 export function isFoldedChatsGroup(
@@ -220,99 +283,6 @@ export function displayTitle(
     || session.title?.trim()
     || deriveTitle(session.preview, fallbackTitle)
   );
-}
-
-function groupSessionsByProject(
-  sessions: ChatSummary[],
-  labels: Pick<ChatGroupLabels, "all">,
-  options: ChatGroupingOptions,
-): SessionGroup[] {
-  const archived = new Set(options.archivedKeys);
-  const conversations: ChatSummary[] = [];
-  const buckets = new Map<string, {
-    path?: string;
-    label: string;
-    sessions: ChatSummary[];
-    updatedAt: string | null;
-  }>();
-
-  for (const session of sessions) {
-    if (archived.has(session.key) && !options.showArchived) {
-      continue;
-    }
-    const scope = session.workspaceScope;
-    const path = scope?.project_path || "";
-    if (!path || sameWorkspacePath(path, options.defaultWorkspacePath)) {
-      conversations.push(session);
-      continue;
-    }
-    const key = normalizeWorkspacePath(path);
-    const label = options.projectNameOverrides[key]?.trim()
-      || scope?.project_name?.trim()
-      || projectNameFromPath(path);
-    const bucket = buckets.get(key) ?? {
-      path,
-      label,
-      sessions: [],
-      updatedAt: null,
-    };
-    bucket.sessions.push(session);
-    const candidate = session.updatedAt ?? session.createdAt ?? null;
-    if (isNewerDate(candidate, bucket.updatedAt)) {
-      bucket.updatedAt = candidate;
-    }
-    buckets.set(key, bucket);
-  }
-
-  const pinned = new Set(options.pinnedKeys);
-  const groups: SessionGroup[] = Array.from(buckets.entries()).map(([key, bucket]) => ({
-    id: `project:${key}`,
-    label: bucket.label,
-    kind: "project" as const,
-    projectPath: bucket.path,
-    projectKey: key,
-    updatedAt: bucket.updatedAt,
-    sessions: sortProjectSessions(
-      bucket.sessions,
-      options.sort,
-      options.titleOverrides,
-      pinned,
-      archived,
-    ),
-  }));
-
-  if (conversations.length) {
-    const chatsUpdatedAt = conversations.reduce<string | null>(
-      (best, s) => {
-        const candidate = s.updatedAt ?? s.createdAt ?? null;
-        return isNewerDate(candidate, best) ? candidate : best;
-      },
-      null,
-    );
-    groups.push({
-      id: "workspace:chats",
-      label: labels.all,
-      updatedAt: chatsUpdatedAt,
-      sessions: sortProjectSessions(
-        conversations,
-        options.sort,
-        options.titleOverrides,
-        pinned,
-        archived,
-      ),
-    });
-  }
-
-  groups.sort((a, b) => {
-    const timeOrder = dateToTime(b.updatedAt) - dateToTime(a.updatedAt);
-    if (timeOrder !== 0) return timeOrder;
-    return a.label.localeCompare(b.label, "en", {
-      numeric: true,
-      sensitivity: "base",
-    });
-  });
-
-  return groups;
 }
 
 function sortProjectSessions(

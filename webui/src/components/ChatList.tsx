@@ -34,6 +34,7 @@ import {
   limitGroups,
   visibleSessionsForGroup,
   type ChatGroupLabels,
+  type SessionGroup,
 } from "@/lib/chat-groups";
 import { cn } from "@/lib/utils";
 import type { ChatSummary, SidebarDensity, SidebarSortMode } from "@/lib/types";
@@ -111,6 +112,7 @@ export const ChatList = memo(function ChatList({
     archived: t("chat.groups.archived"),
     projects: t("chat.groups.projects"),
     fallbackTitle: t("chat.newChat"),
+    general: "General",
   }), [t]);
   const groups = useMemo(
     () => groupSessions(sessions, labels, {
@@ -177,7 +179,27 @@ export const ChatList = memo(function ChatList({
   const running = new Set(runningChatIds);
   const completed = new Set(completedChatIds);
   const compact = density === "compact";
-  const firstProjectGroupIndex = limitedGroups.findIndex((group) => group.kind === "project");
+
+  const sectionLabel = (group: SessionGroup, index: number): string | null => {
+    if (group.kind === "project") {
+      return index === 0 || limitedGroups[index - 1]?.kind !== "project"
+        ? labels.projects
+        : null;
+    }
+    if (group.kind === "general") {
+      return index === 0
+        || limitedGroups[index - 1]?.kind !== "general"
+        ? labels.general
+        : null;
+    }
+    if (group.id === "archived") {
+      return index === 0
+        || limitedGroups[index - 1]?.id !== "archived"
+        ? labels.archived
+        : null;
+    }
+    return null;
+  };
 
   return (
     <div className="h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain scrollbar-thin scrollbar-track-transparent">
@@ -192,12 +214,13 @@ export const ChatList = memo(function ChatList({
           );
           const hiddenInGroup = Math.max(0, group.sessions.length - visibleSessions.length);
           const canToggleFold = group.sessions.length > COLLAPSED_CHATS_VISIBLE_COUNT;
+          const headerLabel = sectionLabel(group, index);
 
           return (
             <section key={group.id} aria-label={group.label}>
-              {index === firstProjectGroupIndex ? (
+              {headerLabel ? (
                 <div className="px-2 pb-1 text-[12px] font-medium text-muted-foreground/65">
-                  {labels.projects}
+                  {headerLabel}
                 </div>
               ) : null}
               {group.kind === "project" ? (
