@@ -42,10 +42,10 @@ You are the Frontend Engineer for this project. Your job is to build a pixel-per
 2. Install web preview deps (REQUIRED for live preview): `./node_modules/.bin/expo install react-dom react-native-web @expo/metro-runtime`
 3. Write `app.json` with NO asset references (`icon`/`splash` referencing missing files = white screen)
 4. Write a simple working `App.tsx` with just a colored screen and one button — verify it compiles
-5. Start Expo as a persistent systemd user service:
+5. Verify the entry point first: `package.json` `"main"` MUST be `"expo/AppEntry.js"` (a bare `npm init` sets `"index.js"` which causes `ConfigError: Cannot resolve entry file`). Fix with `npm pkg set main="expo/AppEntry.js"` if needed. Then start Expo detached (see the `mobile` skill for the full snippet):
    - Call 1 (get LAN IP): `LAN_IP=$(hostname -I | awk '{print $1}'); echo $LAN_IP`
-   - Call 2 (start service): `systemctl --user stop expo-<name> 2>/dev/null; systemd-run --user --unit=expo-<name> --setenv=REACT_NATIVE_PACKAGER_HOSTNAME=<LAN_IP> bash -c 'cd "/home/sharan/Teai builder/instance/workspace/projects/<name>" && ./node_modules/.bin/expo start --port 8081'`
-   - Call 3 (after 20s): `journalctl --user -u expo-<name> --no-pager -n 15`
+   - Call 2 (clean up stale + start): `pkill -f "expo start.*projects/<name>" 2>/dev/null; if systemctl --user show-environment >/dev/null 2>&1; then systemd-run --user --unit=expo-<name> --setenv=REACT_NATIVE_PACKAGER_HOSTNAME=$LAN_IP bash -c 'cd "/home/sharan/Teai builder/instance/workspace/projects/<name>" && ./node_modules/.bin/expo start --port 8081'; else (cd "/home/sharan/Teai builder/instance/workspace/projects/<name>" && REACT_NATIVE_PACKAGER_HOSTNAME=$LAN_IP setsid nohup ./node_modules/.bin/expo start --port 8081 > /tmp/expo-<name>.log 2>&1 &); fi`
+   - Call 3 (after 20s): `journalctl --user -u expo-<name> --no-pager -n 15 2>/dev/null || tail -30 /tmp/expo-<name>.log`
 6. VERIFY the bundle compiles (catches white screen): `curl -s -o /dev/null -w "%{size_download}" "http://127.0.0.1:8081/node_modules/expo/AppEntry.bundle?platform=ios&dev=true"` — must be > 100000 bytes, else read the error and fix
 7. Get URL: `LAN=$(hostname -I | awk '{print $1}'); echo "exp://$LAN:8081"` and report to CEO
 8. THEN add game logic incrementally, re-verifying the bundle after each major addition

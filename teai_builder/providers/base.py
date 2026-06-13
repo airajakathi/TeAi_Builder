@@ -14,7 +14,19 @@ from typing import Any
 import json_repair
 from loguru import logger
 
-from teai_builder.utils.helpers import image_placeholder_text
+def _vision_unavailable_placeholder(path: str | None) -> str:
+    """Placeholder used when image content had to be removed because the model
+    could not process it. Must clearly tell the agent the image was NOT seen so
+    it does not fabricate visual details."""
+    where = f" ({path})" if path else ""
+    return (
+        f"[IMAGE NOT ANALYZED{where}: the active model could not process image "
+        "input, so this image was removed. Do NOT describe, guess, or assume its "
+        "contents. Treat any visual verification as INCONCLUSIVE and rely on "
+        "non-visual evidence (logs, HTTP status, bundle size, file contents) "
+        "instead. To enable image analysis, configure a vision-capable model "
+        "preset.]"
+    )
 
 
 @dataclass
@@ -526,7 +538,14 @@ class LLMProvider(ABC):
 
     @staticmethod
     def _strip_image_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
-        """Replace image_url blocks with text placeholder. Returns None if no images found."""
+        """Replace image_url blocks with an explicit "not analyzed" placeholder.
+
+        Returns None if no images found.
+
+        This runs only after the model rejected image content (e.g. the active
+        model/preset is not vision-capable). The placeholder must make clear the
+        image was NOT seen, so the agent does not hallucinate its contents.
+        """
         found = False
         result = []
         for msg in messages:
@@ -536,8 +555,7 @@ class LLMProvider(ABC):
                 for b in content:
                     if isinstance(b, dict) and b.get("type") == "image_url":
                         path = (b.get("_meta") or {}).get("path", "")
-                        placeholder = image_placeholder_text(path, empty="[image omitted]")
-                        new_content.append({"type": "text", "text": placeholder})
+                        new_content.append({"type": "text", "text": _vision_unavailable_placeholder(path)})
                         found = True
                     else:
                         new_content.append(b)
@@ -561,8 +579,7 @@ class LLMProvider(ABC):
                 for i, b in enumerate(content):
                     if isinstance(b, dict) and b.get("type") == "image_url":
                         path = (b.get("_meta") or {}).get("path", "")
-                        placeholder = image_placeholder_text(path, empty="[image omitted]")
-                        content[i] = {"type": "text", "text": placeholder}
+                        content[i] = {"type": "text", "text": _vision_unavailable_placeholder(path)}
                         found = True
         return found
 

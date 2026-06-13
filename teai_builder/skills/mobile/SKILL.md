@@ -22,25 +22,46 @@ If you cannot get the app to start within 10 minutes, something is wrong. Stop a
 
 ## Correct Expo Workflow (Follow Exactly)
 
-### Step 1: Scaffold (2 minutes)
+### Step 1: Scaffold (2 minutes) — and VERIFY it succeeded
 ```bash
 cd projects/
-npx create-expo-app <name> --template blank-typescript
+npx create-expo-app@latest <name> --template blank-typescript --yes
 cd <name>
 ```
 This gives you a working `App.tsx` that already runs. **Do not break it.**
 
+**MANDATORY verification — the #1 cause of `ConfigError: Cannot resolve entry file`:**
+```bash
+# create-expo-app sometimes fails silently (network/interactive prompt). Verify:
+test -f App.tsx && node -e "process.exit(require('./package.json').main ? 0 : 1)" \
+  && echo "scaffold OK: main=$(node -p "require('./package.json').main")" \
+  || echo "SCAFFOLD INCOMPLETE — fix before continuing"
+```
+
+**If `create-expo-app` failed and you bootstrap manually (e.g. `npm init`), you MUST set the Expo entry point.**
+A bare `npm init -y` sets `"main": "index.js"`, but Expo has no `index.js` → **`ConfigError: Cannot resolve entry file` and a broken/white preview.** Fix it:
+```bash
+# Point package.json at Expo's entry shim (it imports ./App via registerRootComponent)
+npm pkg set main="expo/AppEntry.js"
+# Install the React runtime that create-expo-app would have added (use expo install for matched versions):
+npx expo install react react-dom react-native
+```
+Never leave `"main": "index.js"` unless you actually created an `index.js` that calls `registerRootComponent(App)`.
+
 ### Step 2: Install deps INCLUDING web preview support (2 minutes)
+**Always install native deps with `npx expo install <pkg>` — NEVER `npm install <pkg>@<version>`.**
+`expo install` picks the exact versions that match the installed Expo SDK. Hand-pinning versions (e.g. `react-native@0.73` on SDK 52, which expects `0.76`) causes peer-dependency conflicts, `--legacy-peer-deps` workarounds, and runtime crashes.
+
 For a board game (Ludo, Chess, etc.) — use React Native's built-in drawing, no Skia needed for MVP:
 ```bash
 npm install  # installs what create-expo-app added
 # MANDATORY: web preview deps so the live preview iframe in canvas works
-./node_modules/.bin/expo install react-dom react-native-web @expo/metro-runtime
+npx expo install react-dom react-native-web @expo/metro-runtime
 ```
 
 **`react-dom` + `react-native-web` + `@expo/metro-runtime` are REQUIRED.** Without them, the canvas live-preview shows a blank screen because expo cannot serve the web bundle.
 
-**DO NOT install Skia, Reanimated, or heavy deps for the MVP.** They cause install failures and TS errors. Get the app running first with simple `View`, `Text`, and `TouchableOpacity`.
+**DO NOT install Skia, Reanimated, or heavy deps for the MVP.** They cause install failures and TS errors. Get the app running first with simple `View`, `Text`, and `TouchableOpacity`. If you do add them later, install via `npx expo install react-native-reanimated react-native-gesture-handler` so versions match the SDK.
 
 ### Step 2b: Fix app.json — NEVER reference assets that don't exist
 When you create files inline (instead of via `create-expo-app`), the `assets/` folder is EMPTY. If `app.json` references `./assets/icon.png`, `splash.png`, etc., **Metro fails to bundle and the phone shows a WHITE SCREEN.**
@@ -82,23 +103,36 @@ No Canvas, no Skia, no complex components for the MVP. A Ludo board is just `Vie
 LAN_IP=$(hostname -I | awk '{print $1}'); echo "LAN IP: $LAN_IP"
 ```
 
-**Call 2: Start expo as a persistent systemd user service**
+**Call 2: Clean up any stale preview, then start expo as a persistent background process**
+
+First kill leftover Expo processes for THIS project (stale previews from earlier runs leak and hold ports/CPU):
 ```bash
-LAN_IP=$(hostname -I | awk '{print $1}')
-# Stop any previous expo service for this project
-systemctl --user stop expo-<name> 2>/dev/null || true
-# Start as a persistent service (won't be killed when exec command ends)
-systemd-run --user --unit=expo-<name> \
-  --setenv=REACT_NATIVE_PACKAGER_HOSTNAME=$LAN_IP \
-  bash -c 'cd "/home/sharan/Teai builder/instance/workspace/projects/<name>" && ./node_modules/.bin/expo start --port 8081'
-echo "Expo service started"
+pkill -f "expo start.*projects/<name>" 2>/dev/null || true
+pkill -f "expo start --port 8081" 2>/dev/null || true
 ```
 
-**Why systemd-run?** Unlike `nohup` or `&`, `systemd-run` creates a true persistent background service that survives exec command exits and cannot be accidentally killed by subsequent `pkill` commands.
-
-**Wait 20 seconds, then Call 3: Confirm Metro started**
+Then start Expo so it survives the exec call. **Prefer `systemd-run --user` when a user systemd/D-Bus session exists, otherwise fall back to `setsid`** (works in headless/server/container environments where `systemd-run --user` fails with "Failed to connect to bus"):
 ```bash
-sleep 20 && journalctl --user -u expo-<name> --no-pager -n 20
+LAN_IP=$(hostname -I | awk '{print $1}')
+PROJ="/home/sharan/Teai builder/instance/workspace/projects/<name>"
+if systemctl --user show-environment >/dev/null 2>&1; then
+  systemctl --user stop expo-<name> 2>/dev/null || true
+  systemd-run --user --unit=expo-<name> \
+    --setenv=REACT_NATIVE_PACKAGER_HOSTNAME=$LAN_IP \
+    bash -c "cd \"$PROJ\" && ./node_modules/.bin/expo start --port 8081"
+  echo "Expo started via systemd-run"
+else
+  cd "$PROJ" && REACT_NATIVE_PACKAGER_HOSTNAME=$LAN_IP \
+    setsid nohup ./node_modules/.bin/expo start --port 8081 > /tmp/expo-<name>.log 2>&1 &
+  echo "Expo started via setsid (PID $!) — logs at /tmp/expo-<name>.log"
+fi
+```
+
+**Why not a plain `&` or `nohup` alone?** A bare background job can be killed when the exec session ends. `systemd-run --user` (when available) or `setsid` detaches the process into its own session so it survives. Always run the cleanup `pkill` above first so you don't stack duplicate Metro servers on the same port.
+
+**Wait 20 seconds, then Call 3: Confirm Metro started** (read whichever log/journal applies)
+```bash
+sleep 20 && { journalctl --user -u expo-<name> --no-pager -n 20 2>/dev/null || tail -30 /tmp/expo-<name>.log; }
 ```
 
 **Call 4: Build the exp:// URL and show in canvas**
@@ -113,8 +147,9 @@ canvas(type="mobile_url", content="exp://192.168.x.x:8081", title="<App> — Sca
 
 **CRITICAL**: 
 - `REACT_NATIVE_PACKAGER_HOSTNAME=<LAN_IP>` — without it, expo uses `127.0.0.1` in the manifest and phones can't download the bundle
-- `systemd-run` is the ONLY reliable way to keep expo running across exec commands
-- To stop the service later: `systemctl --user stop expo-<name>`
+- Use `systemd-run --user` when available, else `setsid` — both detach Expo so it survives the exec call. Do NOT rely on a bare `&`.
+- Always `pkill` the project's old Expo process before starting a new one, so you don't leak duplicate Metro servers.
+- To stop later: `systemctl --user stop expo-<name>` (systemd path) or `pkill -f "expo start.*projects/<name>"` (setsid path)
 
 ### Step 5: VERIFY the bundle compiles (catches white screen BEFORE delivery)
 
@@ -175,6 +210,9 @@ If `npx tsc --noEmit` shows errors:
 
 ## Common Mistakes That Cause Failures
 
+- ❌ **`package.json` `"main"` left as `"index.js"` after a manual `npm init` (no such file)** → `ConfigError: Cannot resolve entry file` and a broken preview. Set `"main": "expo/AppEntry.js"`.
+- ❌ **Hand-pinning native dep versions (`npm install react-native@0.73`)** → peer-dependency conflicts and runtime crashes. Use `npx expo install`.
+- ❌ **Relying on `systemd-run --user` in a headless/container env** → "Failed to connect to bus". Fall back to `setsid`.
 - ❌ **Referencing `./assets/icon.png` etc. in app.json when the files don't exist** → white screen
 - ❌ **Skipping `expo install react-dom react-native-web @expo/metro-runtime`** → blank live preview
 - ❌ **Delivering without verifying the bundle compiles (Step 5)** → QR opens to white screen
