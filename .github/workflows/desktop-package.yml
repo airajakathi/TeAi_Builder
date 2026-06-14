@@ -1,0 +1,55 @@
+name: Desktop Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+      - name: Install dependencies
+        run: |
+          pip install -e teai_builder
+          npm ci
+      - name: Build WebUI
+        run: npm run build
+      - name: Package desktop app
+        run: |
+          pyinstaller \
+            teai_builder/desktop/launcher.py \
+            --name teai_builder \
+            --distpath dist-desktop/${{ matrix.os }} \
+            --workpath build-desktop/${{ matrix.os }} \
+            --specpath build-desktop/${{ matrix.os }} \
+            --add-data "web/dist:web/dist" \
+            --hidden-import teai_builder.agent.checkpoint \
+            --hidden-import teai_builder.agent.goal_validator \
+            --hidden-import teai_builder.agent.parallel_executor \
+            --hidden-import teai_builder.agent.task_dependencies \
+            --hidden-import teai_builder.agent.workflow_engine \
+            --hidden-import teai_builder.agent.workflows \
+            --hidden-import teai_builder.agent.dream \
+            --hidden-import teai_builder.agent.distill \
+            --hidden-import teai_builder.command.builtin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teai-builder-${{ matrix.os }}
+          path: dist-desktop/${{ matrix.os }}/*
