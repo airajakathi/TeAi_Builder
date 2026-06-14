@@ -614,7 +614,6 @@ async def cmd_checkpoint(ctx: CommandContext) -> OutboundMessage:
         messages = session.get_history(max_messages=0)
         state = {"max_iterations": ctx.loop.max_iterations}
         checkpoint_id = f"{int(time.time())}"
-        checkpoint = get_checkpoint_store().__class__.__module__
         from teai_builder.agent.checkpoint import Checkpoint
         checkpoint = Checkpoint(
             checkpoint_id=checkpoint_id,

@@ -142,6 +142,15 @@ class WorkflowEngine:
                     run.error = result.error if result else "Unknown task failure"
                     self.save_run(run)
                     return run
+            validation = self.goal_validator.validate(goal, run.step_results)
+            if validation.is_complete is False:
+                run.state = WorkflowState.FAILED
+                run.error = (
+                    "Goal validation failed: "
+                    + ", ".join(validation.failed_criteria or ["unknown failure"])
+                )
+                self.save_run(run)
+                return run
             run.state = WorkflowState.COMPLETED
         except Exception as exc:
             run.state = WorkflowState.FAILED

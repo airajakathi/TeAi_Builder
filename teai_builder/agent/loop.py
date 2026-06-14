@@ -353,6 +353,14 @@ class AgentLoop:
         self._current_iteration: int = 0
         self.commands = CommandRouter()
         register_builtin_commands(self.commands)
+        self.parallel_executor = ParallelExecutor(
+            subagent_manager=self.subagents,
+            bus=self.bus,
+            max_parallel=max_concurrent_subagents or 3,
+        )
+        self.workflow_engine = WorkflowEngine(
+            parallel_executor=self.parallel_executor,
+        )
 
     @classmethod
     def from_config(

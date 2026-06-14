@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { CodeBlock } from "@/components/CodeBlock";
 import { splitFilePath } from "@/components/FileReferenceChip";
+import { MonacoEditor } from "@/components/editor/MonacoEditor";
 import { ApiError, fetchFilePreview } from "@/lib/api";
 import type { FilePreviewPayload } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -268,14 +269,23 @@ export function FilePreviewPanel({
                       })}
                     </div>
                   ) : null}
-                  <CodeBlock
-                    language={state.payload.language}
-                    code={state.payload.content}
-                    chrome="none"
-                    showLineNumbers
-                    wrapLongLines={false}
-                    className="min-h-full"
-                  />
+                  {state.payload.language ? (
+                    <MonacoEditor
+                      files={[{ path: state.payload.path, language: state.payload.language }]}
+                      value={state.payload.content}
+                      readOnly
+                      height={520}
+                    />
+                  ) : (
+                    <CodeBlock
+                      language={state.payload.language}
+                      code={state.payload.content}
+                      chrome="none"
+                      showLineNumbers
+                      wrapLongLines={false}
+                      className="min-h-full"
+                    />
+                  )}
                 </div>
               )}
           </div>
