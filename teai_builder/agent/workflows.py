@@ -43,7 +43,7 @@ def _register_builtins() -> None:
                     name="Scaffold project files.",
                     prompt_template=(
                         "Create the project scaffold for '{project_name}' on '{platform}' following the plan. "
-                        "Initialize the project, configure dependencies, and prepare a preview entrypoint."
+                        "Use the scaffold_project tool to initialize the project, configure dependencies, and prepare a preview entrypoint."
                     ),
                     depends_on=["plan"],
                     checkpoint_after=True,

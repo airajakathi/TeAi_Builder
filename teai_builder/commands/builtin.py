@@ -119,6 +119,20 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "[save|restore|list]",
     ),
     BuiltinCommandSpec(
+        "/pr",
+        "Create pull request",
+        "Create a GitHub pull request from the current repo.",
+        "git-pull-request",
+        "<title> [base]",
+    ),
+    BuiltinCommandSpec(
+        "/pr-review",
+        "Review pull request",
+        "Submit a GitHub pull request review.",
+        "git-review",
+        "<pr> <body>",
+    ),
+    BuiltinCommandSpec(
         "/skill",
         "List skills",
         "List all enabled skills available to the agent.",
@@ -671,5 +685,61 @@ async def cmd_checkpoint(ctx: CommandContext) -> OutboundMessage:
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content="\n".join(lines),
+        metadata={"render_as": "text"},
+    )
+
+
+async def cmd_create_pull_request(ctx: CommandContext) -> OutboundMessage:
+    args = ctx.args.strip().split()
+    if not args:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="Usage: `/pr <title> [base]`",
+            metadata={"render_as": "text"},
+        )
+    title = args[0]
+    base = args[1] if len(args) > 1 else "main"
+    tool = ctx.loop.tools.get("create_pull_request")
+    if tool is None:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="create_pull_request tool is not available.",
+            metadata={"render_as": "text"},
+        )
+    result = await tool.execute(title=title, head=ctx.loop.sessions.get_or_create(ctx.key).key, base=base)
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=str(result),
+        metadata={"render_as": "text"},
+    )
+
+
+async def cmd_review_pull_request(ctx: CommandContext) -> OutboundMessage:
+    args = ctx.args.strip().split(maxsplit=1)
+    if len(args) < 2:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="Usage: `/pr-review <pr> <body>`",
+            metadata={"render_as": "text"},
+        )
+    pr_number = args[0]
+    body = args[1]
+    tool = ctx.loop.tools.get("review_pull_request")
+    if tool is None:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="review_pull_request tool is not available.",
+            metadata={"render_as": "text"},
+        )
+    result = await tool.execute(pr_number=pr_number, body=body)
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=str(result),
         metadata={"render_as": "text"},
     )
