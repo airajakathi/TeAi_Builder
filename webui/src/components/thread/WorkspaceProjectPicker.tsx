@@ -99,25 +99,39 @@ export function WorkspaceProjectPicker({
     if (error && visible) setOpen(true);
   }, [error, visible]);
 
+  const resolveProjectPath = useCallback(
+    (projectPath: string) => {
+      const trimmed = projectPath.trim();
+      if (!trimmed) return "";
+      if (isAbsoluteWorkspacePath(trimmed)) return trimmed;
+      const root = (scope ?? defaultScope)?.project_path ?? "";
+      const normalizedRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
+      const normalizedInput = trimmed.replace(/\\/g, "/").replace(/^\/+/, "");
+      if (!normalizedRoot) return trimmed;
+      return `${normalizedRoot}/${normalizedInput}`;
+    },
+    [defaultScope, scope],
+  );
+
   const applyProjectPath = useCallback(
     (projectPath: string, projectName?: string) => {
       const base = scope ?? defaultScope;
-      const trimmed = projectPath.trim();
+      const resolved = resolveProjectPath(projectPath);
       if (!base || !onChange) return;
-      if (!trimmed || !isAbsoluteWorkspacePath(trimmed)) {
+      if (!resolved || !isAbsoluteWorkspacePath(resolved)) {
         setPathError(t("workspace.dialog.absolutePathRequired"));
         return;
       }
       onChange({
         ...base,
-        project_path: trimmed,
-        project_name: projectName || projectNameFromPath(trimmed),
+        project_path: resolved,
+        project_name: projectName || projectNameFromPath(resolved),
         restrict_to_workspace: base.access_mode === "restricted",
       });
       setPathError(null);
       setOpen(false);
     },
-    [defaultScope, onChange, scope, t],
+    [defaultScope, onChange, scope, t, resolveProjectPath],
   );
 
   const pickNativeFolder = useCallback(async () => {

@@ -871,3 +871,5 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.prefix("/checkpoint ", cmd_checkpoint)
     router.exact("/distill", cmd_distill)
     router.prefix("/distill ", cmd_distill)
+    router.exact("/pr", cmd_create_pull_request)
+    router.exact("/pr-review", cmd_review_pull_request)
