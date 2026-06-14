@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import json
 import os
 import time
@@ -219,3 +221,128 @@ def load_workflows_from_dir(workflows_dir: Path) -> None:
             register_workflow(definition)
         except Exception as exc:
             logger.warning("Failed to load workflow from {}: {}", path, exc)
+
+
+class DynamicWorkflowExecutor:
+    """Adaptive workflow executor with retries, fallback steps, and self-healing."""
+
+    def __init__(
+        self,
+        workflow_engine: WorkflowEngine,
+        max_retries: int = 2,
+        fallback_prompt: str | None = None,
+    ) -> None:
+        self.workflow_engine = workflow_engine
+        self.max_retries = max_retries
+        self.fallback_prompt = fallback_prompt or (
+            "The previous attempt failed. Analyze the error, adjust the plan, "
+            "and continue toward the goal."
+        )
+
+    async def execute(self, definition: WorkflowDefinition, goal: Goal, variables: dict[str, Any]) -> WorkflowRun:
+        run = WorkflowRun(
+            run_id=f"{definition.workflow_id}:{int(time.time())}",
+            workflow_id=definition.workflow_id,
+            goal_id=goal.goal_id,
+            state=WorkflowState.RUNNING,
+        )
+        self.workflow_engine.save_run(run)
+
+        try:
+            task_map = self.workflow_engine._build_task_map(definition, goal, variables)
+            results: dict[str, TaskResult] = {}
+
+            for step in definition.steps:
+                task = task_map[step.step_id]
+                result = await self._run_step_with_retries(goal, task, step, results)
+                results[step.step_id] = result
+                if result.status == TaskStatus.COMPLETED:
+                    run.step_results[step.step_id] = result.output
+                else:
+                    run.state = WorkflowState.FAILED
+                    run.error = result.error or "Dynamic workflow step failed"
+                    self.workflow_engine.save_run(run)
+                    return run
+
+            validation = self.workflow_engine.goal_validator.validate(goal, run.step_results)
+            if validation.is_complete is False:
+                run.state = WorkflowState.FAILED
+                run.error = (
+                    "Goal validation failed: "
+                    + ", ".join(validation.failed_criteria or ["unknown failure"])
+                )
+                self.workflow_engine.save_run(run)
+                return run
+
+            run.state = WorkflowState.COMPLETED
+        except Exception as exc:
+            run.state = WorkflowState.FAILED
+            run.error = str(exc)
+            logger.exception("Dynamic workflow {} failed", run.run_id)
+        finally:
+            run.finished_at = time.time()
+            self.workflow_engine.save_run(run)
+        return run
+
+    async def _run_step_with_retries(
+        self,
+        goal: Goal,
+        task: ParallelTask,
+        step: WorkflowStep,
+        prior_results: dict[str, TaskResult],
+    ) -> TaskResult:
+        last_result: TaskResult | None = None
+        for attempt in range(1, max(step.max_retries, 1) + 1):
+            if attempt > 1:
+                enriched_prompt = self._enrich_prompt_with_failure(task.prompt, last_result, prior_results)
+                task = dataclasses.replace(task, prompt=enriched_prompt)
+            last_result = await self.workflow_engine.parallel_executor._run_task(goal, task)
+            if last_result.status == TaskStatus.COMPLETED:
+                return last_result
+            if step.max_retries and attempt < max(step.max_retries, 1):
+                await asyncio.sleep(min(2 ** attempt, 10))
+
+        return last_result or TaskResult(task_id=task.task_id, status=TaskStatus.FAILED, error="Unknown task failure")
+
+    def _enrich_prompt_with_failure(self, prompt: str, last_result: TaskResult | None, prior_results: dict[str, TaskResult]) -> str:
+        context_lines = [prompt, "", "Previous attempt failed."]
+        if last_result and last_result.error:
+            context_lines.append(f"Failure reason: {last_result.error}")
+        if prior_results:
+            context_lines.append("Prior step outputs:")
+            for step_id, result in prior_results.items():
+                output = result.output.get("output") if isinstance(result.output, dict) else result.output
+                context_lines.append(f"- {step_id}: {output}")
+        context_lines.append(self.fallback_prompt)
+        return "\n".join(context_lines)
+
+
+class ContextCompactor:
+    """Compacts workflow context when context size grows too large."""
+
+    def __init__(self, max_chars: int = 12000) -> None:
+        self.max_chars = max_chars
+
+    def compact(self, context: str) -> str:
+        if len(context) <= self.max_chars:
+            return context
+        head = context[: self.max_chars // 2]
+        tail = context[-self.max_chars // 2 :]
+        return "\n".join([head, "...", "... context trimmed ...", "...", tail])
+
+
+class SemanticCheckpointTrigger:
+    """Suggests checkpoint creation based on workflow semantics."""
+
+    def __init__(self, keywords: tuple[str, ...] | None = None) -> None:
+        self.keywords = keywords or (
+            "scaffold",
+            "plan",
+            "implement",
+            "review",
+            "validate",
+        )
+
+    def should_checkpoint(self, step: WorkflowStep) -> bool:
+        text = f"{step.step_id} {step.name} {step.prompt_template}".lower()
+        return any(keyword in text for keyword in self.keywords)

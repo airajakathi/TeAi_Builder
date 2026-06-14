@@ -34,7 +34,12 @@ from teai_builder.agent.tools.file_state import FileStateStore, bind_file_states
 from teai_builder.agent.tools.message import MessageTool
 from teai_builder.agent.tools.registry import ToolRegistry
 from teai_builder.agent.tools.self import MyTool
-from teai_builder.agent.workflow_engine import WorkflowEngine
+from teai_builder.agent.workflow_engine import (
+    ContextCompactor,
+    DynamicWorkflowExecutor,
+    SemanticCheckpointTrigger,
+    WorkflowEngine,
+)
 from teai_builder.bus.events import InboundMessage, OutboundMessage
 from teai_builder.bus.progress import build_bus_progress_callback
 from teai_builder.bus.queue import MessageBus
@@ -361,6 +366,11 @@ class AgentLoop:
         self.workflow_engine = WorkflowEngine(
             parallel_executor=self.parallel_executor,
         )
+        self.dynamic_workflow = DynamicWorkflowExecutor(
+            workflow_engine=self.workflow_engine,
+        )
+        self.context_compactor = ContextCompactor()
+        self.semantic_checkpoint_trigger = SemanticCheckpointTrigger()
 
     @classmethod
     def from_config(
