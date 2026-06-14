@@ -119,7 +119,10 @@ def get_checkpoint_store() -> CheckpointStore:
     """Get the global checkpoint store."""
     global _checkpoint_store
     if _checkpoint_store is None:
-        _checkpoint_store = CheckpointStore()
+        try:
+            _checkpoint_store = CheckpointStore()
+        except PermissionError:
+            _checkpoint_store = CheckpointStore(storage_dir=Path("/tmp/teai_builder_checkpoints"))
     return _checkpoint_store
 
 

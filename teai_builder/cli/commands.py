@@ -780,8 +780,32 @@ def _run_gateway(
     try:
         provider_snapshot = build_provider_snapshot(config)
     except ValueError as exc:
-        console.print(f"[red]Error: {exc}[/red]")
-        raise typer.Exit(1) from exc
+        from teai_builder.providers.factory import ProviderSnapshot
+        from teai_builder.providers.unconfigured_provider import UnconfiguredProvider
+
+        console.print(f"[yellow]Warning: {exc}[/yellow]")
+        console.print("[yellow]Continuing without an LLM provider; configure one in the WebUI settings.[/yellow]")
+        provider_snapshot = ProviderSnapshot(
+            provider=UnconfiguredProvider(),
+            model="unconfigured",
+            context_window_tokens=4096,
+            signature=(
+                "unconfigured",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "auto",
+                None,
+                None,
+                None,
+                4096,
+                0.7,
+                None,
+            ),
+        )
     session_manager = SessionManager(config.workspace_path)
 
     # Preserve existing single-workspace installs, but keep custom workspaces clean.

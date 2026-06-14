@@ -73,7 +73,15 @@ class WorkflowEngine:
         if storage_dir is None:
             storage_dir = Path.home() / ".teai_builder" / "workflows"
         self.storage_dir = storage_dir
-        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.storage_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            fallback = Path("/tmp/teai_builder_workflows")
+            try:
+                fallback.mkdir(parents=True, exist_ok=True)
+                self.storage_dir = fallback
+            except PermissionError:
+                pass
 
     def _path_for(self, run_id: str) -> Path:
         return self.storage_dir / f"{run_id}.json"

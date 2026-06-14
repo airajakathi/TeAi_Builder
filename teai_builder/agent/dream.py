@@ -109,5 +109,8 @@ _maintainer: DreamMaintainer | None = None
 def get_dream_maintainer() -> DreamMaintainer:
     global _maintainer
     if _maintainer is None:
-        _maintainer = DreamMaintainer()
+        try:
+            _maintainer = DreamMaintainer()
+        except PermissionError:
+            _maintainer = DreamMaintainer(storage_dir=Path("/tmp/teai_builder_dream"))
     return _maintainer

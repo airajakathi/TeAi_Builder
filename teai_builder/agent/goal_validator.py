@@ -202,5 +202,8 @@ def get_goal_validator() -> GoalValidator:
     """Get the global goal validator."""
     global _goal_validator
     if _goal_validator is None:
-        _goal_validator = GoalValidator()
+        try:
+            _goal_validator = GoalValidator()
+        except PermissionError:
+            _goal_validator = GoalValidator(storage_dir=Path("/tmp/teai_builder_goals"))
     return _goal_validator

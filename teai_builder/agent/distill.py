@@ -195,5 +195,8 @@ _distiller: Distiller | None = None
 def get_distiller() -> Distiller:
     global _distiller
     if _distiller is None:
-        _distiller = Distiller()
+        try:
+            _distiller = Distiller()
+        except PermissionError:
+            _distiller = Distiller(storage_dir=Path("/tmp/teai_builder_distill"))
     return _distiller
