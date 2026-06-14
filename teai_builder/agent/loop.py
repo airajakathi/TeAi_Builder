@@ -37,6 +37,8 @@ from teai_builder.agent.tools.self import MyTool
 from teai_builder.agent.auto_evaluator import AutoEvaluator
 from teai_builder.agent.dream import DreamImprover, get_dream_maintainer
 from teai_builder.agent.distill import get_distiller
+from teai_builder.agent.metrics import MetricsCollector
+from teai_builder.agent.trace import TraceStore
 from teai_builder.agent.workflow_engine import (
     ContextCompactor,
     DynamicWorkflowExecutor,
@@ -378,6 +380,8 @@ class AgentLoop:
         self.dream_improver = DreamImprover()
         self.distiller = get_distiller()
         self.dream_maintainer = get_dream_maintainer()
+        self.trace_store = TraceStore()
+        self.metrics_collector = MetricsCollector()
 
     @classmethod
     def from_config(
