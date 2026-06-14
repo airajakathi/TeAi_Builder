@@ -70,6 +70,37 @@ class DreamMaintainer:
         records.sort(key=lambda r: r.created_at, reverse=True)
         return records[: max(1, limit)]
 
+    def analyze_run(self, run_id: str, run_summary: str, run_metadata: dict[str, Any] | None = None) -> DreamRecord:
+        improvements: list[str] = []
+        lowered = run_summary.lower()
+        if "error" in lowered or "failed" in lowered:
+            improvements.append("Reduce failure exposure by adding retries and shorter prompts.")
+        if "timeout" in lowered:
+            improvements.append("Investigate timeout causes and split large tasks.")
+        if "checkpoint" not in lowered:
+            improvements.append("Add semantic checkpoints around scaffold and verify phases.")
+        if not improvements:
+            improvements.append("Keep current workflow shape and monitor token usage.")
+        record = DreamRecord(
+            run_id=run_id,
+            summary=run_summary[:500],
+            improvements=improvements,
+            metadata=run_metadata or {},
+        )
+        self.save(record)
+        return record
+
+
+class DreamImprover:
+    def __init__(self, maintainer: DreamMaintainer | None = None) -> None:
+        self.maintainer = maintainer or get_dream_maintainer()
+
+    def suggest_prompt_changes(self, run_id: str) -> list[str]:
+        record = self.maintainer.load(run_id)
+        if not record:
+            return []
+        return record.improvements
+
 
 # Global singleton
 _maintainer: DreamMaintainer | None = None

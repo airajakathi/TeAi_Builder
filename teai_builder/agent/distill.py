@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -135,6 +137,55 @@ class Distiller:
                 continue
         skills.sort(key=lambda s: s.created_at, reverse=True)
         return skills
+
+    def mine_from_workflow_run(self, run_summary: str, run_metadata: dict[str, Any] | None = None) -> list[DistilledPattern]:
+        findings: list[DistilledPattern] = []
+        lowered = run_summary.lower()
+        for keyword in ["scaffold", "plan", "implement", "review", "validate"]:
+            if keyword in lowered:
+                pattern = DistilledPattern(
+                    pattern_id=hashlib.sha1(keyword.encode()).hexdigest()[:12],
+                    name=f"Workflow keyword: {keyword}",
+                    description=f"Detected workflow activity around '{keyword}' from run summary.",
+                    evidence=[{"summary": run_summary[:300]}],
+                    tags=["workflow", keyword],
+                    metadata=run_metadata or {},
+                )
+                findings.append(pattern)
+        for pattern in findings:
+            self.save_pattern(pattern)
+        return findings
+
+    def build_skill_from_patterns(self, skill_name: str, pattern_ids: list[str]) -> DistilledSkill:
+        prompt_lines = [
+            f"# {skill_name}",
+            "Use this skill when executing similar workflows.",
+            "Learned from prior successful patterns:",
+        ]
+        for pattern_id in pattern_ids:
+            pattern = self.load_pattern(pattern_id)
+            if pattern:
+                prompt_lines.append(f"- {pattern.name}: {pattern.description}")
+        skill = DistilledSkill(
+            skill_id=hashlib.sha1(skill_name.encode()).hexdigest()[:12],
+            name=skill_name,
+            prompt_template="\n".join(prompt_lines),
+            source_patterns=pattern_ids,
+            metadata={"generated_from": "distill"},
+        )
+        self.save_skill(skill)
+        return skill
+
+    def refine_prompt(self, base_prompt: str, run_summary: str) -> str:
+        additions: list[str] = []
+        lowered = run_summary.lower()
+        if "error" in lowered or "failed" in lowered:
+            additions.append("If a step fails, retry it once before escalating.")
+        if "checkpoint" in lowered:
+            additions.append("Create a semantic checkpoint before risky steps.")
+        if not additions:
+            return base_prompt
+        return base_prompt + "\n\nRefinements:\n" + "\n".join(f"- {item}" for item in additions)
 
 
 # Global singleton

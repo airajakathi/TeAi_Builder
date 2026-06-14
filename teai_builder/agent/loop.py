@@ -34,6 +34,9 @@ from teai_builder.agent.tools.file_state import FileStateStore, bind_file_states
 from teai_builder.agent.tools.message import MessageTool
 from teai_builder.agent.tools.registry import ToolRegistry
 from teai_builder.agent.tools.self import MyTool
+from teai_builder.agent.auto_evaluator import AutoEvaluator
+from teai_builder.agent.dream import DreamImprover, get_dream_maintainer
+from teai_builder.agent.distill import get_distiller
 from teai_builder.agent.workflow_engine import (
     ContextCompactor,
     DynamicWorkflowExecutor,
@@ -371,6 +374,10 @@ class AgentLoop:
         )
         self.context_compactor = ContextCompactor()
         self.semantic_checkpoint_trigger = SemanticCheckpointTrigger()
+        self.auto_evaluator = AutoEvaluator()
+        self.dream_improver = DreamImprover()
+        self.distiller = get_distiller()
+        self.dream_maintainer = get_dream_maintainer()
 
     @classmethod
     def from_config(
