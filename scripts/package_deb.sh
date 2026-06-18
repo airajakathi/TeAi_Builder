@@ -18,7 +18,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: amd64
-Depends: libgtk-3-0, libwebkit2gtk-4.1-0, libayatana-appindicator3-1, librsvg2-2, libappindicator3-1, libasound2, libnss3, libxss1, libxtst6, libx11-xcb1, libxcb-dri3-0, libgbm1, libdrm2
+Depends: libgtk-3-0, libwebkit2gtk-4.1-0, libayatana-appindicator3-1, librsvg2-2, libappindicator3-1, libasound2t64, libnss3, libxss1, libxtst6, libx11-xcb1, libxcb-dri3-0, libgbm1, libdrm2
 Maintainer: TeAi Builder <support@example.com>
 Description: TeAi Builder Desktop App
 EOF

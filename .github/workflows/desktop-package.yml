@@ -52,7 +52,7 @@ jobs:
             librsvg2-2 \
             librsvg2-dev \
             libappindicator3-1 \
-            libasound2 \
+            libasound2t64 \
             libnss3 \
             libxss1 \
             libxtst6 \
