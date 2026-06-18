@@ -28,7 +28,7 @@ chmod 0755 "${INSTALL_DIR}/opt/${PKG_NAME}/teai_builder_desktop"
 
 cp -r "${DIST_DIR}/teai_builder_desktop/_internal" "${INSTALL_DIR}/opt/${PKG_NAME}/"
 
-cp "/home/sharan/Teai builder/teai_builder/webui/public/brand/teai_builder_icon.png" "${ICON_PATH}"
+cp "webui/public/brand/teai_builder_icon.png" "${ICON_PATH}"
 
 cat > "${INSTALL_DIR}/usr/share/applications/${PKG_NAME}.desktop" <<EOF
 [Desktop Entry]

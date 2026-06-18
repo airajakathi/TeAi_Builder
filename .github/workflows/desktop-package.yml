@@ -78,6 +78,12 @@ jobs:
           npm ci
           npm run build
 
+      - name: Stage web dist for desktop packaging
+        run: |
+          mkdir -p teai_builder/web
+          rm -rf teai_builder/web/dist
+          cp -r webui/dist teai_builder/web/dist
+
       - name: Package desktop app
         env:
           PYTHONDONTWRITEBYTECODE: "1"
@@ -91,7 +97,7 @@ jobs:
             --distpath dist-desktop/${{ matrix.os }} \
             --workpath build-desktop/${{ matrix.os }} \
             --specpath build-desktop/${{ matrix.os }} \
-            --add-data "teai_builder/web/dist:web/dist" \
+            --add-data "${{ github.workspace }}/teai_builder/web/dist:web/dist" \
             --hidden-import teai_builder.agent.checkpoint \
             --hidden-import teai_builder.agent.goal_validator \
             --hidden-import teai_builder.agent.parallel_executor \
