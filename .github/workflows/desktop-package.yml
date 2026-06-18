@@ -51,7 +51,6 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-2 \
             librsvg2-dev \
-            libappindicator3-1 \
             libasound2t64 \
             libnss3 \
             libxss1 \
