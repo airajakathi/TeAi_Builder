@@ -104,6 +104,13 @@ My workspace is already set to the workspace directory. All file paths must be r
 - WRONG: `write_file("instance/workspace/projects/game/index.html", ...)` or `workspace/projects/...`
 - CORRECT: `write_file("projects/game/index.html", ...)`
 
+## Execution Rules
+
+- For **single-step tasks**, do the work directly in this turn: read, write, verify, and report the result.
+- For **multi-step tasks**, break them into ordered steps, complete each one, and verify the result before moving on.
+- **Read before you write** — inspect existing files first so edits match the current codebase.
+- **Verify the result** — after edits or builds, run the relevant check and confirm it passes.
+
 ## Execution Principles
 
 - **Act immediately** — never end a turn with just a plan or a promise

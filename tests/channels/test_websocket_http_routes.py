@@ -1264,7 +1264,7 @@ def test_bootstrap_ws_url_uses_forwarded_https_host(bus: MagicMock) -> None:
     )
     assert resp.status_code == 200
     body = json.loads(resp.body)
-    assert body["ws_url"] == "wss://teai_builder.example/"
+    assert body["ws_url"] == "wss://teai_builder.example"
 
 
 def test_localhost_without_auth_is_valid(bus: MagicMock) -> None:

@@ -355,7 +355,7 @@ async def test_save_file_envelope_rejects_stale_revision(bus: MagicMock, tmp_pat
     source = workspace / "src" / "app.ts"
     source.parent.mkdir(parents=True)
     source.write_text("export const value = 1;\n", encoding="utf-8")
-    scope = WorkspaceScope(project_path=workspace, allowed_root=workspace, restrict_to_project=False)
+    scope = WorkspaceScope(project_path=workspace, restrict_to_workspace=False, sandbox_status=WorkspaceScopeResolver().default().sandbox_status)
     base_revision = file_preview_payload(str(source), scope=scope)["revision"]
     source.write_text("export const value = 9;\n", encoding="utf-8")
 

@@ -10,7 +10,7 @@ def test_bot_name_and_icon_defaults_preserve_current_branding() -> None:
     """Default values keep the existing 'teai_builder' name and cat icon."""
     defaults = AgentDefaults()
 
-    assert defaults.bot_name == "teai_builder"
+    assert defaults.bot_name == "TeAi Builder"
     assert defaults.bot_icon == "🍵"
 
 

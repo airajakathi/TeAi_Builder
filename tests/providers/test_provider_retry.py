@@ -35,6 +35,16 @@ class ScriptedProvider(LLMProvider):
     def get_default_model(self) -> str:
         return "test-model"
 
+    @staticmethod
+    def _strip_image_content(messages):
+        from teai_builder.providers.base import LLMProvider
+        return LLMProvider._strip_image_content(messages)
+
+    @staticmethod
+    def _strip_image_content_inplace(messages):
+        from teai_builder.providers.base import LLMProvider
+        return LLMProvider._strip_image_content_inplace(messages)
+
 
 @pytest.mark.asyncio
 async def test_chat_with_retry_retries_transient_error_then_succeeds(monkeypatch) -> None:

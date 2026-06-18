@@ -159,11 +159,11 @@ class TestEphemeralDirect:
 
         loop, store = _make_loop
 
-        with patch.object(loop.context.memory, "raw_archive") as mock_archive:
+        with patch("teai_builder.agent.loop.AgentLoop._state_save", new=AsyncMock()):
             await loop.process_direct(
                 "test", session_key="dream:test", ephemeral=True,
             )
-            mock_archive.assert_not_called()
+            loop.context.memory.raw_archive.assert_not_called()
 
     async def test_non_ephemeral_runs_normally(self, tmp_path, _make_loop):
         """Without ephemeral, the normal path returns the model response."""

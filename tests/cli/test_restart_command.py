@@ -27,8 +27,10 @@ def _make_loop():
 
     with patch("teai_builder.agent.loop.ContextBuilder"), \
          patch("teai_builder.agent.loop.SessionManager"), \
-         patch("teai_builder.agent.loop.SubagentManager"):
+         patch("teai_builder.agent.loop.SubagentManager"), \
+         patch("teai_builder.agent.loop.AgentHook"):
         loop = AgentLoop(bus=bus, provider=provider, workspace=workspace)
+    loop.model = "test-model"
     return loop, bus
 
 
@@ -45,6 +47,7 @@ class TestRestartCommand:
         )
 
         loop, bus = _make_loop()
+        assert loop.model == "test-model"
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/restart")
         ctx = CommandContext(msg=msg, session=None, key=msg.session_key, raw="/restart", loop=loop)
 
@@ -80,6 +83,7 @@ class TestRestartCommand:
     async def test_restart_intercepted_in_run_loop(self):
         """Verify /restart is handled at the run-loop level, not inside _dispatch."""
         loop, bus = _make_loop()
+        assert loop.model == "test-model"
         msg = InboundMessage(channel="telegram", sender_id="u1", chat_id="c1", content="/restart")
 
         async def _fast_sleep(_delay: float) -> None:

@@ -1227,7 +1227,7 @@ def test_prompt_merge_does_not_replace_standalone_subagent_history_entry(tmp_pat
     session = Session(key="cli:merge")
     session.add_message("assistant", "previous assistant")
 
-    inserted = loop._persist_subagent_followup(
+    inserted = asyncio.run(loop._persist_subagent_followup(
         session,
         InboundMessage(
             channel="system",
@@ -1236,7 +1236,7 @@ def test_prompt_merge_does_not_replace_standalone_subagent_history_entry(tmp_pat
             content="subagent result",
             metadata={"subagent_task_id": "sub-1"},
         ),
-    )
+    ))
 
     assert inserted is True
 
@@ -1267,8 +1267,8 @@ def test_subagent_followup_dedupes_by_task_id() -> None:
         metadata={"subagent_task_id": "sub-1"},
     )
 
-    assert loop._persist_subagent_followup(session, msg) is True
-    assert loop._persist_subagent_followup(session, msg) is False
+    assert asyncio.run(loop._persist_subagent_followup(session, msg)) is True
+    assert asyncio.run(loop._persist_subagent_followup(session, msg)) is False
     assert len(session.messages) == 1
 
 
@@ -1283,7 +1283,7 @@ def test_subagent_followup_skips_empty_content() -> None:
         metadata={"subagent_task_id": "sub-empty"},
     )
 
-    assert loop._persist_subagent_followup(session, msg) is False
+    assert asyncio.run(loop._persist_subagent_followup(session, msg)) is False
     assert session.messages == []
 
 
