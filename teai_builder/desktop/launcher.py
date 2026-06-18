@@ -1,7 +1,7 @@
-"""Desktop launcher/bootstrap for TeAI Builder.
+"""Stable desktop entrypoint for TeAI Builder.
 
-This module starts the bundled backend gateway, opens the WebUI, and keeps
-the gateway lifecycle tied to the desktop app window.
+This module is intended to be used as the PyInstaller script entrypoint
+(`python -m teai_builder.desktop` or `pyinstaller .../launcher.py`).
 """
 
 from __future__ import annotations
@@ -12,11 +12,9 @@ import time
 import webbrowser
 from pathlib import Path
 from threading import Thread
-from typing import Optional
 
 
-def _wait_for_port(port: int, timeout: float = 60.0) -> bool:
-    """Wait until the given TCP port is accepting connections."""
+def _wait_for_port(port: int, timeout: float = 90.0) -> bool:
     import socket
 
     deadline = time.time() + timeout
@@ -32,30 +30,54 @@ def _wait_for_port(port: int, timeout: float = 60.0) -> bool:
 
 
 def _open_browser(url: str, delay: float = 1.0) -> None:
-    """Open the browser after a short delay so the server can bind first."""
     time.sleep(delay)
     webbrowser.open(url)
 
 
-def launch_desktop(webui_dir: Optional[Path] = None, port: int = 8765) -> int:
-    """Launch the TeAI Builder desktop experience.
+def main() -> int:
+    from teai_builder.cli.commands import _run_gateway
+    from teai_builder.config.loader import load_config
+    from teai_builder.config.schema import Config
+    from teai_builder.webui.gateway_services import build_gateway_services
 
-    Returns the exit code from the gateway process.
-    """
-    from teai_builder.webui.commands import start as gateway_start
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    web_dist = root / "web" / "dist"
+    os.environ.setdefault("TEAI_BUILDER_WEBUI_DIR", str(web_dist))
 
-    project_root = Path(__file__).resolve().parents[2]
-    web_dir = webui_dir or (project_root / "web" / "dist")
-    os.environ.setdefault("TEAI_BUILDER_WEBUI_DIR", str(web_dir))
-    os.environ.setdefault("TEAI_BUILDER_PORT", str(port))
-
+    port = int(os.environ.get("TEAI_BUILDER_PORT", "8765"))
     url = f"http://127.0.0.1:{port}/"
+    Thread(target=_open_browser, args=(url,), daemon=True).start()
 
-    browser_thread = Thread(target=_open_browser, args=(url,), daemon=True)
-    browser_thread.start()
+    try:
+        config = load_config()
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        print(f"Desktop launcher: config load failed ({exc}). Using default config.", file=sys.stderr)
+        config = Config()
 
-    if hasattr(gateway_start, "app"):
-        gateway_start.app()
-        return 0
+    if getattr(config.agents.defaults, "workspace", None):
+        workspace_path = Path(config.agents.defaults.workspace).expanduser().resolve()
+    else:
+        workspace_path = root / "workspace"
 
-    return 1
+    if hasattr(config, "workspace_path"):
+        config.workspace_path = workspace_path
+
+    if hasattr(config, "agents") and hasattr(config.agents, "defaults"):
+        if not getattr(config.agents.defaults, "workspace", None):
+            config.agents.defaults.workspace = str(workspace_path)
+
+    static_dist_path = web_dist if web_dist.is_dir() else None
+    _run_gateway(
+        config,
+        port=port,
+        open_browser_url=None,
+        webui_static_dist=static_dist_path is not None,
+        webui_runtime_surface="desktop",
+        webui_runtime_capabilities={"desktop": True, "full_access": True},
+        health_server_enabled=False,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -31,9 +31,17 @@ TeAi Builder will stop and ask for these rather than guessing.
 
 ## Desktop
 
-Web apps are packaged into native installers with **Tauri** (preferred) or **Electron**,
-producing `.exe`, `.dmg`, or `.AppImage` artifacts. Cross-compilation and code-signing
-have OS-specific requirements; builds are verified before being declared done.
+The recommended route is the **CI desktop packaging workflow**:
+`.github/workflows/desktop-package.yml` builds the desktop app on push tags and
+produces OS artifacts. Use that workflow when you need `.exe`, `.dmg`, or
+`.AppImage` outputs from the repository.
 
-See the in-agent skills (`deploy`, `publish-mobile`, `desktop`) for the detailed,
-enforced procedures.
+Local desktop packaging remains available via **Tauri** (preferred) or **Electron**,
+but those paths need OS-specific toolchains and dependencies. For faster,
+repeatable builds with preinstalled system dependencies, use the GitHub Actions
+workflow instead.
+
+If you use local Tauri or Electron packaging, continue to verify:
+- build exits 0,
+- installer artifacts exist,
+- the packaged app launches.
