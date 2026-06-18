@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from teai_builder.config.paths import get_runtime_subdir
+
 
 @dataclass
 class Checkpoint:
@@ -51,7 +53,7 @@ class CheckpointStore:
     
     def __init__(self, storage_dir: Path | None = None):
         if storage_dir is None:
-            storage_dir = Path.home() / ".teai_builder" / "checkpoints"
+            storage_dir = get_runtime_subdir("checkpoints")
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
     
@@ -89,6 +91,9 @@ class CheckpointStore:
                     "checkpoint_id": data["checkpoint_id"],
                     "created_at": data["created_at"],
                     "context_budget_pct": data["context_budget_pct"],
+                    "state": data.get("state", {}),
+                    "metadata": data.get("metadata", {}),
+                    "message_count": len(data.get("messages", [])),
                 })
             except (OSError, json.JSONDecodeError):
                 continue
@@ -111,6 +116,60 @@ class CheckpointStore:
         return True
 
 
+def summarize_checkpoint(checkpoint: Checkpoint) -> dict[str, Any]:
+    """Build a user-facing summary for a checkpoint."""
+    metadata = dict(checkpoint.metadata or {})
+    state = dict(checkpoint.state or {})
+    summary = {
+        "checkpoint_id": checkpoint.checkpoint_id,
+        "session_key": checkpoint.session_key,
+        "created_at": checkpoint.created_at,
+        "context_budget_pct": checkpoint.context_budget_pct,
+        "kind": metadata.get("kind", "session"),
+        "message_count": len(checkpoint.messages),
+        "workflow_id": metadata.get("workflow_id") or state.get("workflow_id"),
+        "run_id": metadata.get("run_id") or state.get("run_id"),
+        "step_id": metadata.get("step_id") or state.get("step_id"),
+        "label": metadata.get("label"),
+        "result_keys": list(metadata.get("result_keys", [])),
+        "state_keys": sorted(state.keys()),
+    }
+    return summary
+
+
+def build_rebuild_summary(checkpoint: Checkpoint) -> str:
+    """Render a concise rebuild plan from a checkpoint."""
+    summary = summarize_checkpoint(checkpoint)
+    lines = [
+        f"Checkpoint: `{summary['checkpoint_id']}`",
+        f"Session: `{summary['session_key']}`",
+        f"Kind: `{summary['kind']}`",
+        f"Messages captured: {summary['message_count']}",
+    ]
+    if summary["label"]:
+        lines.append(f"Label: {summary['label']}")
+    if summary["workflow_id"]:
+        lines.append(f"Workflow: `{summary['workflow_id']}`")
+    if summary["run_id"]:
+        lines.append(f"Run: `{summary['run_id']}`")
+    if summary["step_id"]:
+        lines.append(f"Step: `{summary['step_id']}`")
+    if summary["result_keys"]:
+        lines.append("Saved results: " + ", ".join(f"`{item}`" for item in summary["result_keys"]))
+    if summary["state_keys"]:
+        lines.append("State keys: " + ", ".join(f"`{item}`" for item in summary["state_keys"]))
+    lines.extend(["", "Rebuild guidance:"])
+    if summary["run_id"]:
+        lines.append(f"- Inspect workflow progress with `/workflow status {summary['run_id']}`.")
+        lines.append(f"- Resume the workflow with `/workflow resume {summary['run_id']}` if it is incomplete.")
+    else:
+        lines.append(f"- Restore the session snapshot with `/checkpoint restore {summary['checkpoint_id']}`.")
+    if summary["step_id"]:
+        lines.append(f"- Re-run or verify work after step `{summary['step_id']}`.")
+    lines.append("- Review saved messages before continuing if the surrounding context may have changed.")
+    return "\n".join(lines)
+
+
 # Global checkpoint store instance
 _checkpoint_store: CheckpointStore | None = None
 
@@ -121,7 +180,7 @@ def get_checkpoint_store() -> CheckpointStore:
     if _checkpoint_store is None:
         try:
             _checkpoint_store = CheckpointStore()
-        except PermissionError:
+        except OSError:
             _checkpoint_store = CheckpointStore(storage_dir=Path("/tmp/teai_builder_checkpoints"))
     return _checkpoint_store
 

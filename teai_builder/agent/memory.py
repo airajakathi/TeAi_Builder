@@ -63,6 +63,7 @@ class MemoryStore:
         self._corruption_logged = False  # rate-limit non-int cursor warning
         self._oversize_logged = False  # rate-limit oversized-entry warning
         self._append_lock = threading.Lock()  # serialize cursor allocation + append
+        self._scoped_stores: dict[str, MemoryStore] = {}
         self._git = GitStore(workspace, tracked_files=[
             "SOUL.md", "USER.md", "memory/MEMORY.md", "memory/.dream_cursor",
         ])
@@ -71,6 +72,19 @@ class MemoryStore:
     @property
     def git(self) -> GitStore:
         return self._git
+
+    def for_workspace(self, workspace: Path | None) -> MemoryStore:
+        if workspace is None:
+            return self
+        root = Path(workspace).expanduser().resolve(strict=False)
+        if root == self.workspace.expanduser().resolve(strict=False):
+            return self
+        key = str(root)
+        store = self._scoped_stores.get(key)
+        if store is None:
+            store = MemoryStore(root, max_history_entries=self.max_history_entries)
+            self._scoped_stores[key] = store
+        return store
 
     # -- generic helpers -----------------------------------------------------
 
@@ -633,6 +647,18 @@ class Consolidator:
             weakref.WeakValueDictionary()
         )
 
+    def _store_for_session(self, session: Session | None) -> MemoryStore:
+        if session is None:
+            return self.store
+        metadata = session.metadata if isinstance(session.metadata, dict) else {}
+        raw_scope = metadata.get("workspace_scope")
+        if not isinstance(raw_scope, dict):
+            return self.store
+        project_path = raw_scope.get("project_path")
+        if not isinstance(project_path, str) or not project_path.strip():
+            return self.store
+        return self.store.for_workspace(Path(project_path))
+
     def set_provider(
         self,
         provider: LLMProvider,
@@ -734,7 +760,7 @@ class Consolidator:
             len(chunk),
             replay_max_messages,
         )
-        summary = await self.archive(chunk, session_key=session.key)
+        summary = await self.archive(chunk, session_key=session.key, session=session)
         session.last_consolidated = end_idx
         self.sessions.save(session)
         return summary
@@ -799,6 +825,7 @@ class Consolidator:
         messages: list[dict],
         *,
         session_key: str | None = None,
+        session: Session | None = None,
     ) -> str | None:
         """Summarize messages via LLM and append to history.jsonl.
 
@@ -806,6 +833,7 @@ class Consolidator:
         """
         if not messages:
             return None
+        target_store = self._store_for_session(session)
         try:
             formatted = MemoryStore._format_messages(messages)
             formatted = self._truncate_to_token_budget(formatted)
@@ -827,7 +855,7 @@ class Consolidator:
             if response.finish_reason == "error":
                 raise RuntimeError(f"LLM returned error: {response.content}")
             summary = response.content or "[no summary]"
-            self.store.append_history(
+            target_store.append_history(
                 summary,
                 max_chars=_ARCHIVE_SUMMARY_MAX_CHARS,
                 session_key=session_key,
@@ -835,7 +863,7 @@ class Consolidator:
             return summary
         except Exception:
             logger.warning("Consolidation LLM call failed, raw-dumping to history")
-            self.store.raw_archive(messages, session_key=session_key)
+            target_store.raw_archive(messages, session_key=session_key)
             return None
 
     async def maybe_consolidate_by_tokens(
@@ -918,7 +946,7 @@ class Consolidator:
                     source,
                     len(chunk),
                 )
-                summary = await self.archive(chunk, session_key=session.key)
+                summary = await self.archive(chunk, session_key=session.key, session=session)
                 # Advance the cursor either way: on success the chunk was
                 # summarized; on failure archive() already raw-archived it as
                 # a breadcrumb. Re-archiving the same chunk on the next call
@@ -990,7 +1018,7 @@ class Consolidator:
             last_active = session.updated_at
             summary: str | None = ""
             if archive_msgs:
-                summary = await self.archive(archive_msgs, session_key=session_key)
+                summary = await self.archive(archive_msgs, session_key=session_key, session=session)
 
             if summary and summary != "(nothing)":
                 session.metadata["_last_summary"] = {

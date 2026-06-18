@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import {
   Archive,
   Brain,
+  GitBranch,
   Menu,
   Search,
   Settings,
@@ -33,11 +34,13 @@ interface SidebarProps {
   onToggleGroup: (groupId: string) => void;
   onRequestRenameProject: (projectKey: string, label: string) => void;
   onNewChatInProject: (projectPath: string, projectName: string) => void;
+  onOpenProject: (projectId: string) => void;
   onOpenSettings: () => void;
   onOpenApps: () => void;
   onOpenSkills: () => void;
+  onOpenWorkflows: () => void;
   onOpenSearch: () => void;
-  activeUtility?: "apps" | "skills" | null;
+  activeUtility?: "apps" | "skills" | "workflows" | null;
   onToggleArchived: () => void;
   onCollapse: () => void;
   onExpand?: () => void;
@@ -173,6 +176,13 @@ export function Sidebar(props: SidebarProps) {
           active={props.activeUtility === "skills"}
           icon={<Brain className="h-4 w-4" />}
         />
+        <SidebarActionButton
+          collapsed={collapsed}
+          label={t("sidebar.workflows")}
+          onClick={props.onOpenWorkflows}
+          active={props.activeUtility === "workflows"}
+          icon={<GitBranch className="h-4 w-4" />}
+        />
         {props.archivedCount ? (
           <SidebarActionButton
             collapsed={collapsed}
@@ -202,6 +212,7 @@ export function Sidebar(props: SidebarProps) {
             onToggleGroup={props.onToggleGroup}
             onRequestRenameProject={props.onRequestRenameProject}
             onNewChatInProject={props.onNewChatInProject}
+            onOpenProject={props.onOpenProject}
             pinnedKeys={props.pinnedKeys}
             archivedKeys={props.archivedKeys}
             titleOverrides={props.titleOverrides}

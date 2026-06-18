@@ -4,7 +4,7 @@ import shlex
 
 import pytest
 
-from teai_builder.agent.tools.sandbox import wrap_command
+from teai_builder.agent.tools.sandbox import sandbox_backend_status, wrap_command
 
 
 def _parse(cmd: str) -> list[str]:
@@ -130,3 +130,24 @@ class TestUnknownBackend:
         ws = str(tmp_path / "project")
         with pytest.raises(ValueError):
             wrap_command("", "ls", ws, ws)
+
+
+class TestSandboxBackendStatus:
+    def test_bwrap_available_on_unix(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "linux")
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+
+        status = sandbox_backend_status("bwrap")
+
+        assert status.available is True
+        assert status.provider == "bwrap"
+        assert "available" in status.summary.lower()
+
+    def test_bwrap_missing(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "linux")
+        monkeypatch.setattr("shutil.which", lambda name: None)
+
+        status = sandbox_backend_status("bwrap")
+
+        assert status.available is False
+        assert "not installed" in status.summary.lower()

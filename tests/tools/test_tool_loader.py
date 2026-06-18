@@ -87,9 +87,11 @@ def test_discover_finds_concrete_tools():
     discovered = loader.discover()
     class_names = {cls.__name__ for cls in discovered}
     assert "ApplyPatchTool" in class_names
+    assert "ExecuteScaffoldPlanTool" in class_names
     assert "ExecTool" in class_names
     assert "CliAppsTool" in class_names
     assert "MessageTool" in class_names
+    assert "PlanProductSurfacesTool" in class_names
     assert "SpawnTool" in class_names
     assert "WriteStdinTool" in class_names
 
@@ -438,7 +440,7 @@ def test_loader_registers_same_tools_as_old_hardcoded():
         "read_file", "write_file", "edit_file", "list_dir",
         "find_files", "grep", "exec", "write_stdin", "list_exec_sessions",
         "web_search", "web_fetch",
-        "message", "spawn", "cron",
+        "execute_scaffold_plan", "message", "plan_product_surfaces", "spawn", "cron",
     }
     actual = set(registered)
     assert expected <= actual, f"Missing tools: {expected - actual}"

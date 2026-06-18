@@ -147,6 +147,19 @@ export interface SkillDetail extends SkillSummary {
 
 export interface SkillsPayload { skills: SkillSummary[]; }
 
+export interface ToolSummary {
+  name: string;
+  description: string;
+  source: "builtin" | "mcp" | string;
+  permission?: "allow" | "confirm" | "deny" | string;
+  read_only: boolean;
+  concurrency_safe: boolean;
+  exclusive: boolean;
+  parameters: Record<string, unknown>;
+}
+
+export interface ToolsPayload { tools: ToolSummary[]; }
+
 export interface WorkflowSummary {
   workflow_id: string;
   name: string;
@@ -155,19 +168,109 @@ export interface WorkflowSummary {
 
 export interface WorkflowsPayload { workflows: WorkflowSummary[]; }
 
+export interface WorkflowRunSummary {
+  run_id: string;
+  workflow_id: string;
+  goal_id: string;
+  state: string;
+  current_step?: string | null;
+  updated_at: number;
+  finished_at?: number | null;
+  error?: string | null;
+  step_count?: number;
+  completed_steps?: number;
+}
+
+export interface WorkflowRunsPayload { items: WorkflowRunSummary[]; }
+
+export interface WorkflowRunStepState {
+  step_id: string;
+  name: string;
+  state: string;
+  attempts: number;
+  started_at?: number | null;
+  finished_at?: number | null;
+  error?: string | null;
+  output?: unknown;
+}
+
+export interface WorkflowRunCheckpoint {
+  step_id?: string | null;
+  saved_at?: number | null;
+  checkpoint_id?: string | null;
+  result_keys?: string[];
+}
+
+export interface WorkflowRunDetail extends WorkflowRunSummary {
+  started_at: number;
+  cancel_requested: boolean;
+  step_results: Record<string, unknown>;
+  status_history: Array<{ state: string; at: number; detail?: string | null }>;
+  checkpoints: WorkflowRunCheckpoint[];
+  step_states: WorkflowRunStepState[];
+}
+
+export interface WorkflowRunDetailPayload { run: WorkflowRunDetail; }
+
 export interface CheckpointSummary {
   checkpoint_id: string;
   created_at: number;
+  kind?: string;
+  message_count?: number;
+  workflow_id?: string | null;
+  run_id?: string | null;
+  step_id?: string | null;
+  label?: string | null;
 }
 
 export interface CheckpointsPayload { items: CheckpointSummary[]; }
 
 export interface CheckpointRestoreResult { restored: boolean; }
 
+export interface CheckpointRebuildPayload {
+  summary: string;
+  checkpoint?: CheckpointSummary;
+}
+
 /** Structured UI blob on ``progress`` WS frames; channels may add more ``kind`` values later. */
 export interface AgentUIBlob {
   kind: string;
   data?: unknown;
+}
+
+export interface WorkflowRunLivePayload {
+  version?: number;
+  run_id: string;
+  workflow_id: string;
+  goal_id: string;
+  session_key?: string | null;
+  state: string;
+  current_step?: string | null;
+  started_at: number;
+  updated_at: number;
+  finished_at?: number | null;
+  error?: string | null;
+  cancel_requested: boolean;
+  step_count?: number;
+  completed_steps?: number;
+  checkpoints?: Array<{
+    step_id?: string | null;
+    saved_at?: number | null;
+    checkpoint_id?: string | null;
+    result_keys?: string[];
+  }>;
+  status_history?: Array<Record<string, unknown>>;
+  step_states?: Array<{
+    step_id: string;
+    name: string;
+    state: string;
+    attempts: number;
+    started_at?: number | null;
+    finished_at?: number | null;
+    error?: string | null;
+    output?: unknown;
+    skipped_reason?: string | null;
+  }>;
 }
 
 /** WebSocket snapshot for sustained goals (`goal_state` events; keyed by ``chat_id``). */
@@ -219,6 +322,7 @@ export interface ChatSummary {
   /** Unix epoch seconds when this session currently has a turn in flight. */
   runStartedAt?: number | null;
   workspaceScope?: WorkspaceScopePayload | null;
+  project?: ProjectSummary | null;
 }
 
 export type WorkspaceAccessMode = "restricted" | "full";
@@ -236,6 +340,9 @@ export interface WorkspaceScopePayload {
     enforced: boolean;
     provider: string;
     provider_label: string;
+    exec_backend?: string;
+    exec_backend_available?: boolean;
+    exec_backend_required?: boolean;
     summary: string;
   };
 }
@@ -248,6 +355,39 @@ export interface WorkspacesPayload {
     can_change_project: boolean;
     can_use_full_access: boolean;
   };
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  slug: string;
+  root_path: string;
+  created_at: string;
+  updated_at: string;
+  phase?: string | null;
+  status: "idle" | "planned" | "active" | "blocked" | "completed" | string;
+  progress: {
+    total: number;
+    completed: number;
+    in_progress: number;
+    blocked: number;
+    percent: number;
+  };
+  docs: Record<string, string>;
+  active_chat_id?: string | null;
+  linked_chat_ids?: string[];
+  chat_count?: number;
+}
+
+export interface ProjectsPayload {
+  schema_version: number;
+  projects: ProjectSummary[];
+}
+
+export interface ProjectBootstrapPayload {
+  created: boolean;
+  project: ProjectSummary;
+  workspace_scope: WorkspaceScopePayload;
 }
 
 export type SidebarDensity = "comfortable" | "compact";
@@ -433,6 +573,17 @@ export interface SettingsPayload {
       default_api_base?: string | null;
     }>;
   };
+  channels?: {
+    configured: Array<{
+      name: string;
+      enabled: boolean;
+    }>;
+    send_progress: boolean;
+    send_tool_hints: boolean;
+    show_reasoning: boolean;
+    extract_document_text: boolean;
+    send_max_retries: number;
+  };
   runtime: {
     config_path: string;
     workspace_path: string;
@@ -447,6 +598,25 @@ export interface SettingsPayload {
       schedule: string;
     };
     unified_session: boolean;
+    reliability?: {
+      telemetry: {
+        enabled: boolean;
+        local_audit_log: boolean;
+        capture_usage: boolean;
+        capture_errors: boolean;
+        max_events: number;
+        path?: string | null;
+      };
+      crash_reports: {
+        enabled: boolean;
+        pending_count: number;
+        archived_count: number;
+        path: string;
+      };
+      logs: {
+        path: string;
+      };
+    };
   };
   usage?: {
     days: Array<{
@@ -494,6 +664,9 @@ export interface SettingsPayload {
       enforced: boolean;
       provider: string;
       provider_label: string;
+      exec_backend?: string;
+      exec_backend_available?: boolean;
+      exec_backend_required?: boolean;
       summary: string;
     };
     ssrf_whitelist_count: number;
@@ -504,8 +677,23 @@ export interface SettingsPayload {
     mcp_server_count: number;
     exec_enabled: boolean;
     exec_sandbox?: string | null;
+    exec_strict_sandbox?: boolean;
     exec_path_prepend_set: boolean;
     exec_path_append_set: boolean;
+    telemetry_enabled?: boolean;
+    local_telemetry_audit_log?: boolean;
+    crash_reports_enabled?: boolean;
+  };
+  tool_governance?: {
+    active_profile: string;
+    profiles: Array<{
+      name: string;
+      description: string;
+      enabled_tools: string[];
+      disabled_tools: string[];
+      active: boolean;
+    }>;
+    permissions: Record<string, "allow" | "confirm" | "deny" | string>;
   };
   requires_restart: boolean;
   restart_required_sections?: Array<"runtime" | "browser" | "image">;
@@ -679,6 +867,11 @@ export interface SettingsUpdate {
   botName?: string;
   botIcon?: string;
   toolHintMaxLength?: number;
+  channelSendProgress?: boolean;
+  channelSendToolHints?: boolean;
+  channelShowReasoning?: boolean;
+  channelExtractDocumentText?: boolean;
+  channelSendMaxRetries?: number;
 }
 
 export interface ModelConfigurationCreate {
@@ -836,7 +1029,10 @@ export type InboundEvent =
       chat_id: string;
       scope?: "metadata" | "thread" | string;
       workspace_scope?: WorkspaceScopePayload;
+      project?: ProjectSummary | null;
     }
+  | { event: "file_saved"; request_id: string; chat_id: string; payload: FilePreviewPayload }
+  | { event: "file_save_failed"; request_id?: string; chat_id?: string; detail?: string }
   | { event: "transcription_result"; request_id: string; text: string }
   | {
       event: "transcription_error";
@@ -905,11 +1101,12 @@ export interface WebuiThreadPersistedPayload {
   sessionKey?: string;
   savedAt?: string;
   messages: UIMessage[];
+  workspace_scope?: WorkspaceScopePayload;
+  project?: ProjectSummary | null;
   fork_boundary_message_count?: number;
   has_pending_tool_calls?: boolean;
   canvas_items?: CanvasRestoreItem[];
   page?: WebuiThreadPagePayload;
-  workspace_scope?: WorkspaceScopePayload;
 }
 
 export interface FilePreviewPayload {
@@ -919,6 +1116,132 @@ export interface FilePreviewPayload {
   language: string;
   content: string;
   size: number;
+  revision: string;
+  truncated: boolean;
+}
+
+export interface FileSymbolItem {
+  path: string;
+  display_path: string;
+  name: string;
+  kind: string;
+  container_name?: string | null;
+  line: number;
+  column: number;
+}
+
+export interface FileSymbolsPayload {
+  path: string;
+  display_path: string;
+  project_path: string;
+  items: FileSymbolItem[];
+}
+
+export interface WorkspaceTreeNode {
+  path: string;
+  display_path: string;
+  name: string;
+  kind: "file" | "directory";
+  children?: WorkspaceTreeNode[];
+}
+
+export interface WorkspaceTreePayload {
+  root: WorkspaceTreeNode;
+  truncated: boolean;
+}
+
+export interface WorkspaceSearchItem {
+  path: string;
+  display_path: string;
+  name: string;
+  score: number;
+}
+
+export interface WorkspaceSearchPayload {
+  query: string;
+  workspace_root: string;
+  items: WorkspaceSearchItem[];
+  scanned_files: number;
+  truncated: boolean;
+}
+
+export interface WorkspaceContentSearchItem {
+  path: string;
+  display_path: string;
+  name: string;
+  line: number;
+  column: number;
+  preview: string;
+  score: number;
+}
+
+export interface WorkspaceContentSearchPayload {
+  query: string;
+  workspace_root: string;
+  items: WorkspaceContentSearchItem[];
+  scanned_files: number;
+  truncated: boolean;
+}
+
+export interface WorkspaceSymbolSearchItem {
+  path: string;
+  display_path: string;
+  name: string;
+  kind: string;
+  container_name?: string | null;
+  line: number;
+  column: number;
+  score: number;
+}
+
+export interface WorkspaceSymbolSearchPayload {
+  query: string;
+  workspace_root: string;
+  items: WorkspaceSymbolSearchItem[];
+  scanned_files: number;
+  truncated: boolean;
+}
+
+export interface WorkspaceReferenceSearchItem {
+  path: string;
+  display_path: string;
+  name: string;
+  kind: string;
+  container_name?: string | null;
+  line: number;
+  column: number;
+  preview: string;
+  definition_path: string;
+  definition_display_path: string;
+  score: number;
+}
+
+export interface WorkspaceReferenceSearchPayload {
+  query: string;
+  workspace_root: string;
+  items: WorkspaceReferenceSearchItem[];
+  scanned_files: number;
+  truncated: boolean;
+}
+
+export interface WorkspaceProblemItem {
+  path: string;
+  display_path: string;
+  name: string;
+  message: string;
+  severity: "error" | "warning" | string;
+  source: string;
+  line: number;
+  column: number;
+  preview: string;
+  score: number;
+}
+
+export interface WorkspaceProblemsPayload {
+  query: string;
+  workspace_root: string;
+  items: WorkspaceProblemItem[];
+  scanned_files: number;
   truncated: boolean;
 }
 
@@ -928,6 +1251,14 @@ export type Outbound =
   | { type: "attach"; chat_id: string }
   | { type: "set_workspace_scope"; chat_id: string; workspace_scope: WorkspaceScopePayload }
   | { type: "transcribe_audio"; request_id: string; data_url: string; duration_ms?: number }
+  | {
+      type: "save_file";
+      request_id: string;
+      chat_id: string;
+      path: string;
+      content: string;
+      base_revision?: string;
+    }
   | {
       type: "message";
       chat_id: string;

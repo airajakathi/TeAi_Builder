@@ -589,7 +589,7 @@ async def cmd_workflow(ctx: CommandContext) -> OutboundMessage:
             metadata={"render_as": "text"},
         )
 
-    from teai_builder.agent.workflow_engine import get_workflow
+    from teai_builder.agent.llm3.workflow_library import get_workflow
     workflow = get_workflow(workflow_id)
     if workflow is None:
         return OutboundMessage(

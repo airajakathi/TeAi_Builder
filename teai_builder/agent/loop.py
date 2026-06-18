@@ -22,15 +22,30 @@ from teai_builder.agent.checkpoint import Checkpoint, get_checkpoint_store
 from teai_builder.agent.context import ContextBuilder
 from teai_builder.agent.cron_turns import CronTurnCoordinator
 from teai_builder.agent.goal_validator import Goal, ValidationResult, get_goal_validator
+from teai_builder.agent.llm3.dynamic_workflow_runtime import LLM3DynamicWorkflowRuntime
+from teai_builder.agent.llm3.workflow_runtime_api import LLM3WorkflowRuntimeAPI
 from teai_builder.agent.hook import AgentHook, CompositeHook
+from teai_builder.agent.llm3.loop_runtime import LLM3LoopRuntime
+from teai_builder.agent.llm3.workflow_executor import LLM3WorkflowExecutor
+from teai_builder.agent.llm3.task_graph import (
+    apply_continuation_event,
+    build_turn_task_graph,
+)
+from teai_builder.agent.llm3.worker_runtime import WorkerRuntime
+from teai_builder.agent.llm3.types import (
+    ExecutionBrief,
+    ExecutionResult,
+    ReviewDecision,
+    UnifiedTurn,
+)
 from teai_builder.agent.memory import Consolidator
 from teai_builder.agent.parallel_executor import ParallelExecutor, ParallelTask
 from teai_builder.agent.progress_hook import AgentProgressHook
-from teai_builder.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
+from teai_builder.agent.runner import AgentRunner
 from teai_builder.agent.subagent import SubagentManager
 from teai_builder.agent.task_dependencies import DependencyGraph, TaskNode
-from teai_builder.agent.tools.context import RequestContext, bind_request_context, reset_request_context
-from teai_builder.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
+from teai_builder.agent.tools.context import RequestContext
+from teai_builder.agent.tools.file_state import FileStateStore
 from teai_builder.agent.tools.message import MessageTool
 from teai_builder.agent.tools.registry import ToolRegistry
 from teai_builder.agent.tools.self import MyTool
@@ -39,13 +54,11 @@ from teai_builder.agent.dream import DreamImprover, get_dream_maintainer
 from teai_builder.agent.distill import get_distiller
 from teai_builder.agent.metrics import MetricsCollector
 from teai_builder.agent.trace import TraceStore
-from teai_builder.agent.workflow_engine import (
+from teai_builder.agent.llm3.workflow_support import (
     ContextCompactor,
-    DynamicWorkflowExecutor,
     SemanticCheckpointTrigger,
-    WorkflowEngine,
 )
-from teai_builder.bus.events import InboundMessage, OutboundMessage
+from teai_builder.bus.events import OUTBOUND_META_AGENT_UI, InboundMessage, OutboundMessage
 from teai_builder.bus.progress import build_bus_progress_callback
 from teai_builder.bus.queue import MessageBus
 from teai_builder.bus.runtime_events import (
@@ -60,17 +73,9 @@ from teai_builder.cron.session_turns import (
 )
 from teai_builder.providers.base import LLMProvider
 from teai_builder.providers.factory import ProviderSnapshot
-from teai_builder.security.workspace_access import (
-    WorkspaceScopeResolver,
-    bind_workspace_scope,
-    reset_workspace_scope,
-)
+from teai_builder.security.workspace_access import WorkspaceScopeResolver
 from teai_builder.session import turn_continuation
-from teai_builder.session.goal_state import (
-    goal_state_runtime_lines,
-    runner_wall_llm_timeout_s,
-    sustained_goal_active,
-)
+from teai_builder.session.goal_state import runner_wall_llm_timeout_s
 from teai_builder.session.keys import UNIFIED_SESSION_KEY, session_key_for_channel
 from teai_builder.session.manager import Session, SessionManager
 from teai_builder.utils.document import extract_documents, reference_non_image_attachments
@@ -78,10 +83,9 @@ from teai_builder.utils.helpers import image_placeholder_text
 from teai_builder.utils.helpers import truncate_text as truncate_text_fn
 from teai_builder.utils.image_generation_intent import image_generation_prompt
 from teai_builder.utils.llm_runtime import LLMRuntime
-from teai_builder.utils.runtime import (
-    EMPTY_FINAL_RESPONSE_MESSAGE,
-    SUSTAINED_GOAL_CONTINUE_PROMPT,
-)
+from teai_builder.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
+
+WorkflowEngine = LLM3WorkflowRuntimeAPI
 
 if TYPE_CHECKING:
     from teai_builder.config.schema import (
@@ -129,6 +133,7 @@ class TurnContext:
 
     final_content: str | None = None
     tools_used: list[str] = field(default_factory=list)
+    tool_events: list[dict[str, str]] = field(default_factory=list)
     all_messages: list[dict[str, Any]] = field(default_factory=list)
     stop_reason: str = ""
     had_injections: bool = False
@@ -155,6 +160,11 @@ class TurnContext:
     turn_latency_ms: int | None = None
 
     trace: list[StateTraceEntry] = field(default_factory=list)
+    unified_turn: UnifiedTurn | None = None
+    orchestration_mode: str | None = None
+    execution_brief: ExecutionBrief | None = None
+    execution_result: ExecutionResult | None = None
+    review_decision: ReviewDecision | None = None
 
 
 class AgentLoop:
@@ -181,6 +191,220 @@ class AgentLoop:
         """Return the current provider/model pair owned by this loop."""
         self._refresh_provider_snapshot()
         return LLMRuntime(self.provider, self.model)
+
+    async def _record_llm3_event(
+        self,
+        ctx: TurnContext,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        await self._llm3_event_runtime.record(
+            turn_id=ctx.turn_id,
+            session_key=ctx.session_key,
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            metadata=ctx.msg.metadata,
+            event_type=event_type,
+            payload=payload,
+        )
+
+    async def _record_llm3_worker_task_event(
+        self,
+        goal: Goal,
+        task: ParallelTask,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        await self._llm3_task_graph_runtime.record_worker_task_event(
+            goal,
+            task,
+            event_type,
+            payload,
+        )
+
+    async def _record_llm3_workflow_step_event(
+        self,
+        run: Any,
+        step: Any,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        await self._llm3_task_graph_runtime.record_workflow_step_event(
+            run,
+            step,
+            event_type,
+            payload,
+        )
+
+    async def _record_llm3_background_worker_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        await self._llm3_task_graph_runtime.record_background_worker_event(
+            event_type,
+            payload,
+        )
+
+    def sync_llm3_workflow_graph(
+        self,
+        *,
+        workflow: Any,
+        run: Any,
+        goal: Goal,
+    ) -> None:
+        self._llm3_task_graph_runtime.sync_workflow_graph(
+            workflow=workflow,
+            run=run,
+            goal=goal,
+        )
+
+    def _update_llm3_workflow_graph_from_payload(self, payload: dict[str, Any]) -> None:
+        self._llm3_task_graph_runtime.apply_workflow_payload(payload)
+
+    def start_llm3_workflow_recovery(
+        self,
+        *,
+        run: Any,
+        goal: Goal,
+        reason: str,
+        source_checkpoint_id: str | None = None,
+    ) -> str:
+        return self._llm3_task_graph_runtime.start_workflow_recovery(
+            run=run,
+            goal=goal,
+            reason=reason,
+            source_checkpoint_id=source_checkpoint_id,
+        )
+
+    def _update_llm3_review_graph(self, ctx: TurnContext) -> None:
+        if ctx.review_decision is None:
+            return
+        self._llm3_task_graph_runtime.update_review_graph(
+            turn_id=ctx.turn_id,
+            session_key=ctx.session_key,
+            review_decision=ctx.review_decision,
+        )
+
+    def _update_llm3_response_candidate_graph(self, ctx: TurnContext) -> None:
+        if ctx.execution_result is None:
+            return
+        self._llm3_task_graph_runtime.update_response_candidate_graph(
+            turn_id=ctx.turn_id,
+            session_key=ctx.session_key,
+            execution_result=ctx.execution_result,
+        )
+
+    def complete_llm3_workflow_recovery(
+        self,
+        recovery_id: str,
+        *,
+        goal: Goal,
+        run: Any,
+        status: str,
+        summary: str | None = None,
+    ) -> None:
+        self._llm3_task_graph_runtime.complete_workflow_recovery(
+            recovery_id,
+            goal=goal,
+            run=run,
+            status=status,
+            summary=summary,
+        )
+
+    @staticmethod
+    def _llm3_execution_node_id(graph: Any, request_id: str | None) -> str | None:
+        if not request_id:
+            return None
+        node_id = f"{graph.graph_id}:execution:{request_id}"
+        return node_id if any(node.node_id == node_id for node in graph.nodes) else None
+
+    @staticmethod
+    def _llm3_latest_node_id(graph: Any, node_type: str) -> str | None:
+        for node in reversed(graph.nodes):
+            if node.type == node_type:
+                return node.node_id
+        return None
+
+    @staticmethod
+    def _llm3_latest_reason_node_id(graph: Any, request_id: str) -> str | None:
+        for node in reversed(graph.nodes):
+            if (
+                node.type == "reason"
+                and node.payload.get("request_id") == request_id
+                and node.payload.get("reason_kind") == "stream"
+            ):
+                return node.node_id
+        return None
+
+    def _update_llm3_response_graph(self, ctx: TurnContext) -> None:
+        self._llm3_task_graph_runtime.update_response_graph(
+            turn_id=ctx.turn_id,
+            session_key=ctx.session_key,
+            execution_result=ctx.execution_result,
+            stop_reason=ctx.stop_reason,
+            final_content=ctx.final_content,
+        )
+
+    async def _finalize_llm3_response_graph(self, ctx: TurnContext) -> None:
+        self._update_llm3_response_graph(ctx)
+
+    def _update_llm3_tool_graph(self, ctx: TurnContext) -> None:
+        if ctx.execution_brief is None or not ctx.tool_events:
+            return
+        self._llm3_task_graph_runtime.update_tool_graph(
+            turn_id=ctx.turn_id,
+            session_key=ctx.session_key,
+            request_id=ctx.execution_brief.request_id,
+            tool_events=ctx.tool_events,
+        )
+
+    async def _record_llm3_tool_progress_event(
+        self,
+        *,
+        turn_id: str,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+        request_id: str,
+        tool_events: list[dict[str, Any]],
+    ) -> None:
+        await self._llm3_task_graph_runtime.record_tool_progress_event(
+            turn_id=turn_id,
+            session_key=session_key,
+            channel=channel,
+            chat_id=chat_id,
+            request_id=request_id,
+            tool_events=tool_events,
+        )
+
+    def _initialize_llm3_turn_graph(self, ctx: TurnContext) -> None:
+        if ctx.unified_turn is None or ctx.execution_brief is None:
+            return
+        self._llm3_task_graph_runtime.initialize_turn_graph(
+            turn_id=ctx.turn_id,
+            session_key=ctx.session_key,
+            unified_turn=ctx.unified_turn,
+            execution_brief=ctx.execution_brief,
+            orchestration_mode=ctx.orchestration_mode,
+        )
+
+    def _update_llm3_execution_graph(
+        self,
+        ctx: TurnContext,
+        *,
+        event_type: str,
+        status: str | None = None,
+    ) -> None:
+        if ctx.execution_brief is None:
+            return
+        self._llm3_task_graph_runtime.update_execution_graph(
+            turn_id=ctx.turn_id,
+            session_key=ctx.session_key,
+            request_id=ctx.execution_brief.request_id,
+            event_type=event_type,
+            status=status,
+        )
 
     _RUNTIME_CHECKPOINT_KEY = "runtime_checkpoint"
     _PENDING_USER_TURN_KEY = "pending_user_turn"
@@ -287,9 +511,12 @@ class AgentLoop:
         self.workspace_scopes = WorkspaceScopeResolver(
             default_workspace=workspace,
             default_restrict_to_workspace=restrict_to_workspace,
+            exec_sandbox_backend=self.exec_config.sandbox,
+            exec_sandbox_strict=self.exec_config.strict_sandbox,
         )
         self._start_time = time.time()
         self._last_usage: dict[str, int] = {}
+        self._last_run_tool_events: list[dict[str, str]] = []
         self._extra_hooks: list[AgentHook] = hooks or []
 
         self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
@@ -312,6 +539,10 @@ class AgentLoop:
             max_concurrent_subagents=max_concurrent_subagents,
             llm_wall_timeout_for_session=lambda sk: runner_wall_llm_timeout_s(self.sessions, sk),
             preset_snapshot_loader=preset_snapshot_loader,
+        )
+        self.worker_runtime = WorkerRuntime(
+            self.subagents,
+            on_background_worker_event=self._record_llm3_background_worker_event,
         )
         self._unified_session = unified_session
         self._max_messages = max_messages if max_messages > 0 else 120
@@ -367,12 +598,46 @@ class AgentLoop:
             subagent_manager=self.subagents,
             bus=self.bus,
             max_parallel=max_concurrent_subagents or 3,
+            worker_runtime=self.worker_runtime,
+            on_task_event=self._record_llm3_worker_task_event,
         )
         self.workflow_engine = WorkflowEngine(
             parallel_executor=self.parallel_executor,
+            on_run_update=self._publish_workflow_run_update,
+            on_step_event=self._record_llm3_workflow_step_event,
+            execute_tool=self.tools.execute,
         )
-        self.dynamic_workflow = DynamicWorkflowExecutor(
+        self._llm3_runtime = LLM3LoopRuntime.build(
+            workspace=workspace,
+            publish_runtime_event=self._runtime_events().orchestration_event,
+            run_payload_builder=lambda run: (
+                self.workflow_engine.workflow_service.run_update_payload(run)
+                if getattr(self.workflow_engine, "workflow_service", None) is not None
+                else self.workflow_engine.run_update_payload(run)
+            ),
+        )
+        self._llm3_event_emitter = self._llm3_runtime.event_emitter
+        self._llm3_event_runtime = self._llm3_runtime.event_runtime
+        self._llm3_state_store = self._llm3_runtime.state_store
+        self._llm3_turn_runtime = self._llm3_runtime.turn_runtime
+        self._llm3_execution_runtime = self._llm3_runtime.execution_runtime
+        self._llm3_response_runtime = self._llm3_runtime.response_runtime
+        self._llm3_workflow_runtime = self._llm3_runtime.workflow_runtime
+        self._llm3_task_graph_runtime = self._llm3_runtime.task_graph_runtime
+        self._llm3_runner_runtime = self._llm3_runtime.runner_runtime
+        self._llm3_workflow_service = self.workflow_engine.workflow_service
+        self._llm3_dynamic_workflow_runtime = LLM3DynamicWorkflowRuntime(
             workflow_engine=self.workflow_engine,
+            workflow_service=self._llm3_workflow_service,
+        )
+        self.dynamic_workflow = self._llm3_dynamic_workflow_runtime
+        self._llm3_workflow_executor = LLM3WorkflowExecutor(
+            workflow_service=self._llm3_workflow_service,
+            dynamic_workflow=self._llm3_dynamic_workflow_runtime,
+            schedule_background=self._schedule_background,
+            sync_task_graph=self.sync_llm3_workflow_graph,
+            start_recovery=self.start_llm3_workflow_recovery,
+            complete_recovery=self.complete_llm3_workflow_recovery,
         )
         self.context_compactor = ContextCompactor()
         self.semantic_checkpoint_trigger = SemanticCheckpointTrigger()
@@ -547,6 +812,7 @@ class AgentLoop:
     def _register_default_tools(self) -> None:
         """Register the default set of tools via plugin loader."""
         from teai_builder.agent.tools.context import ToolContext
+        from teai_builder.agent.tools.governance import ToolGovernance
         from teai_builder.agent.tools.loader import ToolLoader
 
         ctx = ToolContext(
@@ -554,6 +820,7 @@ class AgentLoop:
             workspace=str(self.workspace),
             bus=self.bus,
             subagent_manager=self.subagents,
+            worker_runtime=self.worker_runtime,
             cron_service=self.cron_service,
             sessions=self.sessions,
             provider_snapshot_loader=self._provider_snapshot_loader,
@@ -566,11 +833,14 @@ class AgentLoop:
         )
         loader = ToolLoader()
         registered = loader.load(ctx, self.tools)
+        governance = ToolGovernance.from_config(self.tools_config)
 
         # MyTool needs runtime state reference — manual registration
-        if self.tools_config.my.enable:
+        my_policy = governance.policy_for("my")
+        if self.tools_config.my.enable and my_policy.available:
             self.tools.register(
-                MyTool(runtime_state=self, modify_allowed=self.tools_config.my.allow_set)
+                MyTool(runtime_state=self, modify_allowed=self.tools_config.my.allow_set),
+                permission=my_policy.permission,
             )
             registered.append("my")
 
@@ -612,10 +882,75 @@ class AgentLoop:
         return str(msg.metadata.get("context_chat_id") or msg.chat_id)
 
     async def _build_bus_progress_callback(
-        self, msg: InboundMessage
+        self,
+        msg: InboundMessage,
+        *,
+        turn_id: str | None = None,
+        request_id: str | None = None,
+        session_key: str | None = None,
     ) -> Callable[..., Awaitable[None]]:
         """Build a progress callback that publishes to the message bus."""
-        return build_bus_progress_callback(self.bus, msg)
+        bus_callback = build_bus_progress_callback(self.bus, msg)
+
+        async def _progress(
+            content: str,
+            *,
+            tool_hint: bool = False,
+            tool_events: list[dict[str, Any]] | None = None,
+            file_edit_events: list[dict[str, Any]] | None = None,
+            reasoning: bool = False,
+            reasoning_end: bool = False,
+        ) -> None:
+            if turn_id is not None and request_id is not None and tool_events:
+                await self._record_llm3_tool_progress_event(
+                    turn_id=turn_id,
+                    session_key=session_key or self._effective_session_key(msg),
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    request_id=request_id,
+                    tool_events=tool_events,
+                )
+            if turn_id is not None and request_id is not None and (reasoning or reasoning_end):
+                await self._record_llm3_reasoning_progress_event(
+                    turn_id=turn_id,
+                    session_key=session_key or self._effective_session_key(msg),
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    request_id=request_id,
+                    content=content,
+                    status="completed" if reasoning_end else "running",
+                )
+            await bus_callback(
+                content,
+                tool_hint=tool_hint,
+                tool_events=tool_events,
+                file_edit_events=file_edit_events,
+                reasoning=reasoning,
+                reasoning_end=reasoning_end,
+            )
+
+        return _progress
+
+    async def _record_llm3_reasoning_progress_event(
+        self,
+        *,
+        turn_id: str,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+        request_id: str,
+        content: str,
+        status: str,
+    ) -> None:
+        await self._llm3_task_graph_runtime.record_reasoning_progress_event(
+            turn_id=turn_id,
+            session_key=session_key,
+            channel=channel,
+            chat_id=chat_id,
+            request_id=request_id,
+            content=content,
+            status=status,
+        )
 
     async def _build_retry_wait_callback(
         self, msg: InboundMessage
@@ -773,161 +1108,25 @@ class AgentLoop:
 
         Returns (final_content, tools_used, messages, stop_reason, had_injections).
         """
-        self._sync_subagent_runtime_limits()
-
-        loop_hook = AgentProgressHook(
+        result = await self._llm3_runner_runtime.execute(
+            self,
+            initial_messages,
             on_progress=on_progress,
             on_stream=on_stream,
             on_stream_end=on_stream_end,
+            on_retry_wait=on_retry_wait,
+            session=session,
             channel=channel,
             chat_id=chat_id,
             message_id=message_id,
             metadata=metadata,
             session_key=session_key,
-            tool_hint_max_length=self.tool_hint_max_length,
-            set_tool_context=self._set_tool_context,
-            on_iteration=lambda iteration: setattr(self, "_current_iteration", iteration),
+            pending_queue=pending_queue,
+            ephemeral=ephemeral,
+            tools=tools,
         )
-        hook: AgentHook = loop_hook
-        if not ephemeral and self._extra_hooks:
-            hook = CompositeHook([loop_hook] + self._extra_hooks)
-
-        async def _checkpoint(payload: dict[str, Any]) -> None:
-            if session is None:
-                return
-            self._set_runtime_checkpoint(session, payload)
-
-        async def _drain_pending(*, limit: int = _MAX_INJECTIONS_PER_TURN) -> list[dict[str, Any]]:
-            """Drain follow-up messages from the pending queue.
-
-            When no messages are immediately available but sub-agents
-            spawned in this dispatch are still running, blocks until at
-            least one result arrives (or timeout).  This keeps the runner
-            loop alive so subsequent sub-agent completions are consumed
-            in-order rather than dispatched separately.
-            """
-            if pending_queue is None:
-                return []
-
-            def _to_user_message(pending_msg: InboundMessage) -> dict[str, Any]:
-                content = pending_msg.content
-                media = pending_msg.media if pending_msg.media else None
-                if media:
-                    content, media = self._prepare_message_media(content, media)
-                    media = media or None
-                user_content = self.context._build_user_content(content, media)
-                return {"role": "user", "content": user_content}
-
-            items: list[dict[str, Any]] = []
-            while len(items) < limit:
-                try:
-                    items.append(_to_user_message(pending_queue.get_nowait()))
-                except asyncio.QueueEmpty:
-                    break
-
-            # Block if nothing drained but sub-agents spawned in this dispatch
-            # are still running.  Keeps the runner loop alive so subsequent
-            # completions are injected in-order rather than dispatched separately.
-            if (not items
-                    and session is not None
-                    and self.subagents.get_running_count_by_session(session.key) > 0):
-                try:
-                    msg = await asyncio.wait_for(pending_queue.get(), timeout=300)
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "Timeout waiting for sub-agent completion in session {}",
-                        session.key,
-                    )
-                    return items
-                items.append(_to_user_message(msg))
-                while len(items) < limit:
-                    try:
-                        items.append(_to_user_message(pending_queue.get_nowait()))
-                    except asyncio.QueueEmpty:
-                        break
-
-            return items
-
-        active_session_key = session.key if session else session_key
-        effective_scope = self.workspace_scopes.for_turn(
-            channel=channel,
-            message_metadata=metadata,
-            session_metadata=session.metadata if session is not None else None,
-        )
-        request_ctx = RequestContext(
-            channel=channel,
-            chat_id=chat_id,
-            message_id=message_id,
-            session_key=active_session_key,
-            metadata=dict(metadata or {}),
-        )
-        file_state_token = bind_file_states(self._file_state_store.for_session(active_session_key))
-        request_token = bind_request_context(request_ctx)
-        workspace_token = bind_workspace_scope(effective_scope)
-        # Build continuation message that embeds the active goal objective so
-        # the LLM can see it even if earlier Runtime Context was truncated.
-        _goal_lines = goal_state_runtime_lines(session.metadata if session is not None else None)
-        _goal_continue = (
-            "You have an active sustained goal:\n\n"
-            + "\n".join(_goal_lines)
-            + "\n\nPlease continue working toward the objective using your tools, "
-            "or call complete_goal if the work is truly finished."
-        ) if _goal_lines else SUSTAINED_GOAL_CONTINUE_PROMPT
-        session_metadata = session.metadata if session is not None else None
-        try:
-            result = await self.runner.run(AgentRunSpec(
-                initial_messages=initial_messages,
-                tools=tools or self.tools,
-                model=self.model,
-                max_iterations=self.max_iterations,
-                max_tool_result_chars=self.max_tool_result_chars,
-                hook=hook,
-                error_message="Sorry, I encountered an error calling the AI model.",
-                concurrent_tools=True,
-                workspace=effective_scope.project_path,
-                session_key=session.key if session else None,
-                context_window_tokens=self.context_window_tokens,
-                context_block_limit=self.context_block_limit,
-                provider_retry_mode=self.provider_retry_mode,
-                progress_callback=on_progress,
-                stream_progress_deltas=on_stream is not None,
-                retry_wait_callback=on_retry_wait,
-                checkpoint_callback=_checkpoint,
-                injection_callback=_drain_pending,
-                # Sustained goals may legitimately exceed TEAI_BUILDER_LLM_TIMEOUT_S; idle stall
-                # is still capped by TEAI_BUILDER_STREAM_IDLE_TIMEOUT_S in streaming providers.
-                llm_timeout_s=runner_wall_llm_timeout_s(
-                    self.sessions,
-                    session.key if session is not None else session_key,
-                    metadata=session_metadata,
-                    message_metadata=metadata,
-                ),
-                goal_active_predicate=lambda: sustained_goal_active(session.metadata) if session is not None else False,
-                goal_continue_message=_goal_continue,
-                finalize_on_max_iterations=turn_continuation.should_finalize_on_max_iterations(
-                    pending_queue_available=pending_queue is not None and session is not None,
-                    session_metadata=session_metadata,
-                    message_metadata=metadata,
-                ),
-            ))
-        finally:
-            reset_workspace_scope(workspace_token)
-            reset_request_context(request_token)
-            reset_file_states(file_state_token)
-        self._last_usage = result.usage
         if result.stop_reason == "max_iterations":
             logger.warning("Max iterations ({}) reached", self.max_iterations)
-            should_stream = turn_continuation.should_stream_budget_response(
-                stop_reason=result.stop_reason,
-                pending_queue_available=pending_queue is not None and session is not None,
-                session_metadata=session_metadata,
-                message_metadata=metadata,
-            )
-            # Push final content through stream so streaming channels (e.g. Feishu)
-            # update the card instead of leaving it empty.
-            if on_stream and on_stream_end and should_stream:
-                await on_stream(result.final_content or "")
-                await on_stream_end(resuming=False)
         elif result.stop_reason == "error":
             logger.error("LLM returned error: {}", (result.final_content or "")[:200])
         return result.final_content, result.tools_used, result.messages, result.stop_reason, result.had_injections
@@ -1186,11 +1385,88 @@ class AgentLoop:
                 logger.debug("MCP server '{}' cleanup error (can be ignored)", name)
         self._mcp_stacks.clear()
 
-    def _schedule_background(self, coro) -> None:
+    def _schedule_background(self, coro) -> asyncio.Task[Any]:
         """Schedule a coroutine as a tracked background task (drained on shutdown)."""
         task = asyncio.create_task(coro)
         self._background_tasks.append(task)
         task.add_done_callback(self._background_tasks.remove)
+        return task
+
+    def start_llm3_workflow_execution(
+        self,
+        *,
+        workflow: Any,
+        goal: Goal,
+        variables: dict[str, Any],
+        on_completed: Callable[[Any, Any], Awaitable[None]],
+    ) -> Any:
+        return self._llm3_workflow_executor.start(
+            workflow=workflow,
+            goal=goal,
+            variables=variables,
+            on_completed=on_completed,
+        )
+
+    def load_llm3_workflow_run(self, run_id: str) -> Any | None:
+        return self._llm3_workflow_service.load_run(run_id)
+
+    def list_llm3_workflow_runs(
+        self,
+        *,
+        workflow_id: str | None = None,
+        limit: int = 10,
+    ) -> list[Any]:
+        return self._llm3_workflow_service.list_runs(workflow_id=workflow_id, limit=limit)
+
+    def cancel_llm3_workflow_run(self, run_id: str) -> bool:
+        return self._llm3_workflow_service.request_cancel(run_id)
+
+    def is_llm3_workflow_active(self, run_id: str) -> bool:
+        return self._llm3_workflow_service.is_run_active(run_id)
+
+    def llm3_workflow_goal_from_run(self, run: Any) -> Any | None:
+        return self._llm3_workflow_service.goal_from_run(run)
+
+    def llm3_workflow_variables_from_run(self, run: Any) -> dict[str, Any]:
+        return self._llm3_workflow_service.variables_from_run(run)
+
+    def resume_llm3_workflow_execution(
+        self,
+        *,
+        workflow: Any,
+        run: Any,
+        goal: Goal,
+        variables: dict[str, Any],
+        on_completed: Callable[[Any, Any], Awaitable[None]],
+    ) -> Any:
+        return self._llm3_workflow_executor.resume(
+            workflow=workflow,
+            run=run,
+            goal=goal,
+            variables=variables,
+            on_completed=on_completed,
+        )
+
+    async def _publish_workflow_run_update(self, payload: dict[str, Any]) -> None:
+        self._update_llm3_workflow_graph_from_payload(payload)
+        session_key = payload.get("session_key")
+        if not isinstance(session_key, str) or not session_key.startswith("websocket:"):
+            return
+        chat_id = session_key.split(":", 1)[1]
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel="websocket",
+                chat_id=chat_id,
+                content="",
+                metadata={
+                    "_progress": True,
+                    OUTBOUND_META_AGENT_UI: {
+                        "kind": "workflow_run",
+                        "data": payload,
+                    },
+                },
+            )
+        )
 
     def stop(self) -> None:
         """Stop the agent loop."""
@@ -1227,7 +1503,7 @@ class AgentLoop:
             replay_max_messages=self._max_messages,
         )
         is_subagent = msg.sender_id == "subagent"
-        if is_subagent and self._persist_subagent_followup(session, msg):
+        if is_subagent and await self._persist_subagent_followup(session, msg):
             logger.debug("Subagent result persisted for session {}", key)
             self.sessions.save(session)
         self._set_tool_context(
@@ -1462,6 +1738,25 @@ class AgentLoop:
         # ensure it exists in case this handler is invoked independently.
         if ctx.session is None:
             ctx.session = self.sessions.get_or_create(ctx.session_key)
+        executive_plan = self._llm3_turn_runtime.start_turn(
+            msg,
+            turn_id=ctx.turn_id,
+            session_key=ctx.session_key,
+        )
+        ctx.unified_turn = executive_plan.turn
+        ctx.orchestration_mode = executive_plan.mode
+        ctx.execution_brief = executive_plan.brief
+        self._initialize_llm3_turn_graph(ctx)
+        await self._record_llm3_event(
+            ctx,
+            "turn_started",
+            {"channel": msg.channel},
+        )
+        await self._record_llm3_event(
+            ctx,
+            "turn_normalized",
+            {"mode": executive_plan.mode},
+        )
         await self._runtime_events().session_turn_started(msg, ctx.session_key)
         self.workspace_scopes.persist_message_scope(ctx.session, msg)
 
@@ -1522,7 +1817,13 @@ class AgentLoop:
             ctx.msg.channel,
             ctx.msg.chat_id,
             ctx.msg.metadata.get("message_id"),
-            ctx.msg.metadata,
+            {
+                **dict(ctx.msg.metadata or {}),
+                "_llm3_turn_id": ctx.turn_id,
+                "_llm3_request_id": (
+                    ctx.execution_brief.request_id if ctx.execution_brief is not None else None
+                ),
+            },
             session_key=ctx.session_key,
         )
         if message_tool := self.tools.get("message"):
@@ -1552,9 +1853,27 @@ class AgentLoop:
         )
 
         if ctx.on_progress is None:
-            ctx.on_progress = await self._build_bus_progress_callback(ctx.msg)
+            ctx.on_progress = await self._build_bus_progress_callback(
+                ctx.msg,
+                turn_id=ctx.turn_id,
+                request_id=(ctx.execution_brief.request_id if ctx.execution_brief is not None else None),
+                session_key=ctx.session_key,
+            )
         if ctx.on_retry_wait is None:
             ctx.on_retry_wait = await self._build_retry_wait_callback(ctx.msg)
+
+        if ctx.execution_brief is not None:
+            self._llm3_turn_runtime.record_execution_brief(ctx.execution_brief)
+            await self._record_llm3_event(
+                ctx,
+                "mode_selected",
+                {"mode": ctx.orchestration_mode},
+            )
+            await self._record_llm3_event(
+                ctx,
+                "execution_prepared",
+                {"request_id": ctx.execution_brief.request_id},
+            )
 
         return "ok"
 
@@ -1567,28 +1886,88 @@ class AgentLoop:
             "running",
             started_at=ctx.visible_run_started_at,
         )
-        result = await self._run_agent_loop(
-            ctx.initial_messages,
-            on_progress=ctx.on_progress,
-            on_stream=ctx.on_stream,
-            on_stream_end=ctx.on_stream_end,
-            on_retry_wait=ctx.on_retry_wait,
-            session=ctx.session,
-            channel=ctx.msg.channel,
-            chat_id=ctx.msg.chat_id,
-            message_id=ctx.msg.metadata.get("message_id"),
-            metadata=ctx.msg.metadata,
-            session_key=ctx.session_key,
-            pending_queue=ctx.pending_queue,
-            ephemeral=ctx.ephemeral,
-            tools=ctx.tools,
+        await self._record_llm3_event(
+            ctx,
+            "execution_started",
+            {"request_id": ctx.execution_brief.request_id if ctx.execution_brief else None},
         )
-        final_content, tools_used, all_msgs, stop_reason, had_injections = result
-        ctx.final_content = final_content
-        ctx.tools_used = tools_used
-        ctx.all_messages = all_msgs
-        ctx.stop_reason = stop_reason
-        ctx.had_injections = had_injections
+        self._update_llm3_execution_graph(ctx, event_type="execution_started")
+        if ctx.execution_brief is not None:
+            runtime_outcome = await self._llm3_execution_runtime.execute(
+                ctx.execution_brief,
+                lambda: self._run_agent_loop(
+                    ctx.initial_messages,
+                    on_progress=ctx.on_progress,
+                    on_stream=ctx.on_stream,
+                    on_stream_end=ctx.on_stream_end,
+                    on_retry_wait=ctx.on_retry_wait,
+                    session=ctx.session,
+                    channel=ctx.msg.channel,
+                    chat_id=ctx.msg.chat_id,
+                    message_id=ctx.msg.metadata.get("message_id"),
+                    metadata=ctx.msg.metadata,
+                    session_key=ctx.session_key,
+                    pending_queue=ctx.pending_queue,
+                    ephemeral=ctx.ephemeral,
+                    tools=ctx.tools,
+                ),
+                tool_events_supplier=lambda: list(self._last_run_tool_events),
+            )
+            outcome = runtime_outcome.execution
+            ctx.execution_result = outcome.result
+            ctx.review_decision = runtime_outcome.review
+            await self._record_llm3_event(
+                ctx,
+                "execution_completed",
+                {
+                    "request_id": outcome.result.request_id,
+                    "status": outcome.result.status,
+                },
+            )
+            self._update_llm3_execution_graph(
+                ctx,
+                event_type="execution_completed",
+                status=outcome.result.status,
+            )
+            ctx.tool_events = list(outcome.tool_events)
+            self._update_llm3_tool_graph(ctx)
+            self._update_llm3_response_candidate_graph(ctx)
+            self._update_llm3_review_graph(ctx)
+            await self._record_llm3_event(
+                ctx,
+                "review_completed",
+                {"decision": ctx.review_decision.decision},
+            )
+            ctx.final_content = outcome.final_content
+            ctx.tools_used = outcome.tools_used
+            ctx.tool_events = list(outcome.tool_events)
+            ctx.all_messages = outcome.all_messages
+            ctx.stop_reason = outcome.stop_reason
+            ctx.had_injections = outcome.had_injections
+        else:
+            result = await self._run_agent_loop(
+                ctx.initial_messages,
+                on_progress=ctx.on_progress,
+                on_stream=ctx.on_stream,
+                on_stream_end=ctx.on_stream_end,
+                on_retry_wait=ctx.on_retry_wait,
+                session=ctx.session,
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                message_id=ctx.msg.metadata.get("message_id"),
+                metadata=ctx.msg.metadata,
+                session_key=ctx.session_key,
+                pending_queue=ctx.pending_queue,
+                ephemeral=ctx.ephemeral,
+                tools=ctx.tools,
+            )
+            final_content, tools_used, all_msgs, stop_reason, had_injections = result
+            ctx.final_content = final_content
+            ctx.tools_used = tools_used
+            ctx.tool_events = list(self._last_run_tool_events)
+            ctx.all_messages = all_msgs
+            ctx.stop_reason = stop_reason
+            ctx.had_injections = had_injections
         await turn_continuation.maybe_continue_turn(ctx)
         return "ok"
 
@@ -1644,8 +2023,19 @@ class AgentLoop:
             ctx.on_stream,
             turn_latency_ms=ctx.turn_latency_ms,
         )
-        if ctx.ephemeral and ctx.outbound is not None:
-            ctx.outbound.metadata["_stop_reason"] = ctx.stop_reason
+        if ctx.outbound is not None and ctx.unified_turn is not None:
+            ctx.outbound = await self._llm3_response_runtime.finalize_response(
+                ctx.outbound,
+                turn_id=ctx.turn_id,
+                turn=ctx.unified_turn,
+                mode=ctx.orchestration_mode,
+                brief=ctx.execution_brief,
+                result=ctx.execution_result,
+                review=ctx.review_decision,
+                stop_reason=ctx.stop_reason,
+                ephemeral=ctx.ephemeral,
+                on_response_ready=lambda: self._finalize_llm3_response_graph(ctx),
+            )
         return "ok"
 
     def _sanitize_persisted_blocks(
@@ -1759,7 +2149,7 @@ class AgentLoop:
             session.messages[last_assistant_idx]["latency_ms"] = int(turn_latency_ms)
         session.updated_at = datetime.now()
 
-    def _persist_subagent_followup(self, session: Session, msg: InboundMessage) -> bool:
+    async def _persist_subagent_followup(self, session: Session, msg: InboundMessage) -> bool:
         """Persist subagent follow-ups before prompt assembly so history stays durable.
 
         Returns True if a new entry was appended; False if the follow-up was
@@ -1781,6 +2171,49 @@ class AgentLoop:
             injected_event="subagent_result",
             subagent_task_id=task_id,
         )
+        owner_turn_id = msg.metadata.get("owner_turn_id") if isinstance(msg.metadata, dict) else None
+        owner_request_id = msg.metadata.get("owner_request_id") if isinstance(msg.metadata, dict) else None
+        if isinstance(owner_turn_id, str):
+            graph = self._llm3_state_store.latest_task_graph_for_turn(owner_turn_id)
+            if graph is not None:
+                continuation_id = str(task_id or f"subagent:{len(session.messages)}")
+                updated_graph = apply_continuation_event(
+                    graph,
+                    continuation_id=continuation_id,
+                    worker_id=str(task_id) if task_id is not None else None,
+                    request_id=str(owner_request_id) if owner_request_id is not None else None,
+                    content_preview=(
+                        msg.content[:160] + "..." if len(msg.content) > 160 else msg.content
+                    ),
+                )
+                if updated_graph is not graph:
+                    self._llm3_state_store.record_task_graph(
+                        turn_id=owner_turn_id,
+                        session_key=session.key,
+                        graph=updated_graph,
+                    )
+                    self._llm3_event_emitter.emit(
+                        turn_id=owner_turn_id,
+                        session_key=session.key,
+                        event_type="subagent_result_persisted",
+                        payload={
+                            "subagent_task_id": task_id,
+                            "request_id": owner_request_id,
+                            "continuation_id": continuation_id,
+                        },
+                    )
+                    await self._runtime_events().orchestration_event(
+                        channel=str(msg.metadata.get("origin_channel", "system")),
+                        chat_id=str(msg.metadata.get("origin_chat_id", msg.chat_id)),
+                        session_key=session.key,
+                        metadata=dict(msg.metadata or {}),
+                        event_type="subagent_result_persisted",
+                        payload={
+                            "subagent_task_id": task_id,
+                            "request_id": owner_request_id,
+                            "continuation_id": continuation_id,
+                        },
+                    )
         return True
 
     def _set_runtime_checkpoint(self, session: Session, payload: dict[str, Any]) -> None:
@@ -1901,7 +2334,9 @@ class AgentLoop:
         await self._connect_mcp()
         msg = InboundMessage(
             channel=channel, sender_id="user", chat_id=chat_id,
-            content=content, media=media or [],
+            content=content,
+            media=media or [],
+            metadata={"_inline_subagents": True},
         )
         # Share the dispatch lock so direct calls serialize with bus turns.
         lock = self._session_locks.setdefault(session_key, asyncio.Lock())

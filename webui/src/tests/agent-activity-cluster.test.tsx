@@ -604,12 +604,46 @@ describe("AgentActivityCluster", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /failed @github/i }));
-
     expect(screen.getByTestId("activity-cli-runs")).toHaveTextContent("Failed");
     expect(screen.getByTestId("activity-cli-runs")).toHaveTextContent("@github");
     expect(screen.getByTestId("activity-cli-runs")).toHaveTextContent("Error: CLI app 'github' not found");
     expect(screen.queryByText("Ran CLI")).not.toBeInTheDocument();
+  });
+
+  it("exposes a reuse action for completed CLI runs", () => {
+    const onReuseCliRun = vi.fn();
+    render(
+      <AgentActivityCluster
+        messages={[{
+          id: "t-cli-reuse",
+          role: "tool",
+          kind: "trace",
+          content: 'run_cli_app({"name":"pytest","args":["-q","tests/test_editor.py"],"json":false})',
+          traces: ['run_cli_app({"name":"pytest","args":["-q","tests/test_editor.py"],"json":false})'],
+          toolEvents: [
+            {
+              phase: "end",
+              call_id: "call-pytest",
+              name: "run_cli_app",
+              arguments: { name: "pytest", args: ["-q", "tests/test_editor.py"], json: false },
+            },
+          ],
+          createdAt: 1,
+        }]}
+        isTurnStreaming={false}
+        hasBodyBelow={false}
+        onReuseCliRun={onReuseCliRun}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /used @pytest/i }));
+    fireEvent.click(screen.getByTestId("activity-cli-reuse-pytest"));
+
+    expect(onReuseCliRun).toHaveBeenCalledWith(expect.objectContaining({
+      name: "pytest",
+      args: ["-q", "tests/test_editor.py"],
+      status: "done",
+    }));
   });
 
   it("renders MCP preset tool calls as branded activity rows", () => {
@@ -864,8 +898,6 @@ describe("AgentActivityCluster", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /failed angry-birds\.html/i }));
-
     expect(screen.getByText("Target text was not found in angry-birds.html.")).toBeInTheDocument();
   });
 
@@ -895,8 +927,6 @@ describe("AgentActivityCluster", () => {
         hasBodyBelow={false}
       />,
     );
-
-    fireEvent.click(screen.getByRole("button", { name: /failed composition\.html/i }));
 
     expect(screen.getByText("No permission to change this location.")).toBeInTheDocument();
     expect(screen.queryByText(/\[Errno 13\]/)).not.toBeInTheDocument();

@@ -1,5 +1,6 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -20,12 +21,13 @@ def _make_loop(tmp_path):
     provider.chat_with_retry = AsyncMock(return_value=response)
     provider.chat_stream_with_retry = AsyncMock(return_value=response)
 
-    loop = AgentLoop(
-        bus=bus,
-        provider=provider,
-        workspace=tmp_path,
-        model="test-model",
-    )
+    with patch("teai_builder.agent.loop.WorkflowEngine"):
+        loop = AgentLoop(
+            bus=bus,
+            provider=provider,
+            workspace=tmp_path,
+            model="test-model",
+        )
     WebuiTurnCoordinator(
         bus=bus,
         sessions=loop.sessions,
@@ -95,3 +97,22 @@ async def test_process_direct_reuses_existing_session_lock(tmp_path) -> None:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+
+
+@pytest.mark.asyncio
+async def test_process_direct_marks_requests_for_inline_subagents(tmp_path) -> None:
+    loop = _make_loop(tmp_path)
+    loop._connect_mcp = AsyncMock()
+    seen = {}
+
+    async def _process_message(msg, **_kwargs):
+        seen["metadata"] = dict(msg.metadata or {})
+        return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="ok")
+
+    loop._process_message = _process_message
+
+    response = await loop.process_direct("direct", session_key="cli:test")
+
+    assert response is not None
+    assert response.content == "ok"
+    assert seen["metadata"]["_inline_subagents"] is True

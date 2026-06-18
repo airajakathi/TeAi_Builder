@@ -35,7 +35,9 @@ PHASE_ORDER: list[str] = [
 # Phases that may not be entered until independent verification passes.
 VERIFIED_PHASES: frozenset[str] = frozenset({"deliver", "deploy"})
 
-VALID_PLATFORMS: frozenset[str] = frozenset({"web", "mobile", "desktop", "cli", "unknown"})
+VALID_PLATFORMS: frozenset[str] = frozenset(
+    {"web", "mobile", "desktop", "cli", "backend", "extension", "bot", "solution", "unknown"}
+)
 
 
 def _now_iso() -> str:
@@ -155,6 +157,17 @@ def record_verification_result(project_dir: Path, result: dict[str, Any]) -> Non
     """Persist the latest verification result on the project state file."""
     state = load_state(project_dir)
     state["verification"] = {**result, "recorded_at": _now_iso(), "epoch": time.time()}
+    save_state(project_dir, state)
+
+
+def record_artifact_value(project_dir: Path, artifact: str, value: str) -> None:
+    """Persist a recorded artifact on the project state file."""
+    state = load_state(project_dir)
+    artifacts = state.setdefault("artifacts", {})
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+        state["artifacts"] = artifacts
+    artifacts[artifact] = value
     save_state(project_dir, state)
 
 

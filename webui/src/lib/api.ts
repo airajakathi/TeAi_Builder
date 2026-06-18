@@ -1,4 +1,5 @@
 import type {
+  CheckpointRebuildPayload,
   ChatSummary,
   CliAppsPayload,
   FilePreviewPayload,
@@ -7,7 +8,9 @@ import type {
   ModelConfigurationCreate,
   ModelConfigurationUpdate,
   NetworkSafetySettingsUpdate,
+  ProjectBootstrapPayload,
   ProviderModelsPayload,
+  ProjectsPayload,
   ProviderSettingsUpdate,
   SessionDeleteResult,
   SessionAutomationsPayload,
@@ -16,13 +19,22 @@ import type {
   SidebarStatePayload,
   SkillDetail,
   SkillsPayload,
+  ToolsPayload,
   SlashCommand,
   TranscriptionSettingsUpdate,
   WebSearchSettingsUpdate,
   WorkspacesPayload,
   WebuiThreadPersistedPayload,
+  WorkspaceContentSearchPayload,
+  WorkspaceProblemsPayload,
+  WorkspaceReferenceSearchPayload,
   WorkspaceScopePayload,
+  WorkspaceAccessMode,
+  WorkspaceSearchPayload,
+  WorkspaceSymbolSearchPayload,
+  WorkspaceTreePayload,
 } from "./types";
+import { sanitizeAssistantVisibleContent, sanitizePreviewText } from "./assistantContent";
 import { fetchWithTimeout } from "./http";
 
 const API_READ_TIMEOUT_MS = 20_000;
@@ -105,6 +117,7 @@ export async function listSessions(
     preview?: string;
     run_started_at?: number | null;
     workspace_scope?: WorkspaceScopePayload | null;
+    project?: import("./types").ProjectSummary | null;
   };
   const body = await request<{ sessions: Row[] }>(
     `${base}/api/sessions`,
@@ -117,10 +130,11 @@ export async function listSessions(
     ...splitKey(s.key),
     createdAt: s.created_at,
     updatedAt: s.updated_at,
-    title: s.title ?? "",
-    preview: s.preview ?? "",
+    title: sanitizeAssistantVisibleContent(s.title ?? ""),
+    preview: sanitizePreviewText(s.preview ?? ""),
     runStartedAt: s.run_started_at ?? null,
     workspaceScope: s.workspace_scope ?? null,
+    project: s.project ?? null,
   }));
 }
 
@@ -171,6 +185,139 @@ export async function fetchFilePreview(
   );
 }
 
+export async function fetchFileSymbols(
+  token: string,
+  key: string,
+  path: string,
+  base: string = "",
+): Promise<import("./types").FileSymbolsPayload> {
+  const query = new URLSearchParams();
+  query.set("path", path);
+  return request<import("./types").FileSymbolsPayload>(
+    `${base}/api/sessions/${encodeURIComponent(key)}/file-symbols?${query}`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchWorkspaceTree(
+  token: string,
+  key: string,
+  base: string = "",
+): Promise<WorkspaceTreePayload> {
+  return request<WorkspaceTreePayload>(
+    `${base}/api/sessions/${encodeURIComponent(key)}/workspace-tree`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchWorkspaceSearch(
+  token: string,
+  key: string,
+  query: string,
+  limit: number = 40,
+  base: string = "",
+): Promise<WorkspaceSearchPayload> {
+  const params = new URLSearchParams();
+  params.set("q", query);
+  params.set("limit", String(limit));
+  return request<WorkspaceSearchPayload>(
+    `${base}/api/sessions/${encodeURIComponent(key)}/workspace-search?${params.toString()}`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchWorkspaceContentSearch(
+  token: string,
+  key: string,
+  query: string,
+  limit: number = 40,
+  base: string = "",
+): Promise<WorkspaceContentSearchPayload> {
+  const params = new URLSearchParams();
+  params.set("q", query);
+  params.set("limit", String(limit));
+  return request<WorkspaceContentSearchPayload>(
+    `${base}/api/sessions/${encodeURIComponent(key)}/workspace-content-search?${params.toString()}`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchWorkspaceSymbolSearch(
+  token: string,
+  key: string,
+  query: string,
+  limit: number = 40,
+  base: string = "",
+): Promise<WorkspaceSymbolSearchPayload> {
+  const params = new URLSearchParams();
+  params.set("q", query);
+  params.set("limit", String(limit));
+  return request<WorkspaceSymbolSearchPayload>(
+    `${base}/api/sessions/${encodeURIComponent(key)}/workspace-symbol-search?${params.toString()}`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchWorkspaceReferenceSearch(
+  token: string,
+  key: string,
+  query: string,
+  limit: number = 40,
+  base: string = "",
+): Promise<WorkspaceReferenceSearchPayload> {
+  const params = new URLSearchParams();
+  params.set("q", query);
+  params.set("limit", String(limit));
+  return request<WorkspaceReferenceSearchPayload>(
+    `${base}/api/sessions/${encodeURIComponent(key)}/workspace-reference-search?${params.toString()}`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchWorkspaceProblems(
+  token: string,
+  key: string,
+  query: string,
+  limit: number = 40,
+  base: string = "",
+): Promise<WorkspaceProblemsPayload> {
+  const params = new URLSearchParams();
+  params.set("q", query);
+  params.set("limit", String(limit));
+  return request<WorkspaceProblemsPayload>(
+    `${base}/api/sessions/${encodeURIComponent(key)}/workspace-problems?${params.toString()}`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function rebuildCheckpoint(
+  token: string,
+  sessionKey: string,
+  checkpointId: string,
+  base: string = "",
+): Promise<CheckpointRebuildPayload> {
+  return request<CheckpointRebuildPayload>(
+    `${base}/api/sessions/${encodeURIComponent(sessionKey)}/checkpoints/${encodeURIComponent(checkpointId)}/rebuild`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
 export async function fetchSessionAutomations(
   token: string,
   key: string,
@@ -180,6 +327,90 @@ export async function fetchSessionAutomations(
     `${base}/api/sessions/${encodeURIComponent(key)}/automations`,
     token,
     undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchSessionWorkflowRuns(
+  token: string,
+  key: string,
+  base: string = "",
+): Promise<{ items: Array<{
+  run_id: string;
+  workflow_id: string;
+  goal_id: string;
+  state: string;
+  current_step?: string | null;
+  updated_at: number;
+  finished_at?: number | null;
+  error?: string | null;
+  step_count?: number;
+  completed_steps?: number;
+}> }> {
+  return request(
+    `${base}/api/sessions/${encodeURIComponent(key)}/workflow-runs`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchSessionWorkflowRunDetail(
+  token: string,
+  key: string,
+  runId: string,
+  base: string = "",
+): Promise<{ run: {
+  run_id: string;
+  workflow_id: string;
+  goal_id: string;
+  state: string;
+  current_step?: string | null;
+  started_at: number;
+  updated_at: number;
+  finished_at?: number | null;
+  error?: string | null;
+  step_count?: number;
+  completed_steps?: number;
+  cancel_requested: boolean;
+  step_results: Record<string, unknown>;
+  status_history: Array<{ state: string; at: number; detail?: string | null }>;
+  checkpoints: Array<{
+    step_id?: string | null;
+    saved_at?: number | null;
+    checkpoint_id?: string | null;
+    result_keys?: string[];
+  }>;
+  step_states: Array<{
+    step_id: string;
+    name: string;
+    state: string;
+    attempts: number;
+    started_at?: number | null;
+    finished_at?: number | null;
+    error?: string | null;
+    output?: unknown;
+  }>;
+} }> {
+  return request(
+    `${base}/api/sessions/${encodeURIComponent(key)}/workflow-runs/${encodeURIComponent(runId)}`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function controlSessionWorkflowRun(
+  token: string,
+  key: string,
+  runId: string,
+  action: "resume" | "cancel",
+  base: string = "",
+): Promise<{ accepted: boolean; action: string; command: string }> {
+  return request(
+    `${base}/api/sessions/${encodeURIComponent(key)}/workflow-runs/${encodeURIComponent(runId)}/${action}`,
+    token,
+    { method: "POST" },
     API_READ_TIMEOUT_MS,
   );
 }
@@ -203,6 +434,18 @@ export async function fetchSkillDetail(
 ): Promise<SkillDetail> {
   return request<SkillDetail>(
     `${base}/api/webui/skills/${encodeURIComponent(name)}`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchTools(
+  token: string,
+  base: string = "",
+): Promise<ToolsPayload> {
+  return request<ToolsPayload>(
+    `${base}/api/webui/tools`,
     token,
     undefined,
     API_READ_TIMEOUT_MS,
@@ -282,12 +525,41 @@ export async function fetchWorkspaces(
   );
 }
 
+export async function fetchProjects(
+  token: string,
+  base: string = "",
+): Promise<ProjectsPayload> {
+  return request<ProjectsPayload>(
+    `${base}/api/projects`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
 export async function fetchWorkspaceFolders(
   token: string,
   base: string = "",
 ): Promise<{ folders: { path: string; name: string }[] }> {
   return request<{ folders: { path: string; name: string }[] }>(
     `${base}/api/workspace-folders`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function bootstrapProject(
+  token: string,
+  name: string,
+  accessMode: WorkspaceAccessMode,
+  base: string = "",
+): Promise<ProjectBootstrapPayload> {
+  const query = new URLSearchParams();
+  query.set("name", name);
+  query.set("access_mode", accessMode);
+  return request<ProjectBootstrapPayload>(
+    `${base}/api/projects/bootstrap?${query}`,
     token,
     undefined,
     API_READ_TIMEOUT_MS,
@@ -470,6 +742,21 @@ export async function updateSettings(
   if (update.toolHintMaxLength !== undefined) {
     query.set("tool_hint_max_length", String(update.toolHintMaxLength));
   }
+  if (update.channelSendProgress !== undefined) {
+    query.set("channel_send_progress", String(update.channelSendProgress));
+  }
+  if (update.channelSendToolHints !== undefined) {
+    query.set("channel_send_tool_hints", String(update.channelSendToolHints));
+  }
+  if (update.channelShowReasoning !== undefined) {
+    query.set("channel_show_reasoning", String(update.channelShowReasoning));
+  }
+  if (update.channelExtractDocumentText !== undefined) {
+    query.set("channel_extract_document_text", String(update.channelExtractDocumentText));
+  }
+  if (update.channelSendMaxRetries !== undefined) {
+    query.set("channel_send_max_retries", String(update.channelSendMaxRetries));
+  }
   return request<SettingsPayload>(`${base}/api/settings/update?${query}`, token);
 }
 
@@ -648,8 +935,17 @@ export async function listCheckpoints(
   token: string,
   sessionKey: string,
   base: string = "",
-): Promise<{ items: Array<{ checkpoint_id: string; created_at: number }> }> {
-  return request<{ items: Array<{ checkpoint_id: string; created_at: number }> }>(
+): Promise<{ items: Array<{
+  checkpoint_id: string;
+  created_at: number;
+  kind?: string;
+  message_count?: number;
+  workflow_id?: string | null;
+  run_id?: string | null;
+  step_id?: string | null;
+  label?: string | null;
+}> }> {
+  return request(
     `${base}/api/sessions/${encodeURIComponent(sessionKey)}/checkpoints`,
     token,
     undefined,

@@ -129,10 +129,22 @@ describe("ChatList", () => {
     const onToggleGroup = vi.fn();
     const onRequestRenameProject = vi.fn();
     const onNewChatInProject = vi.fn();
+    const onOpenProject = vi.fn();
     const sessions = [
       session({
         chatId: "alpha",
         title: "Alpha task",
+        project: {
+          id: "proj_photos",
+          name: "Photos",
+          slug: "photos",
+          root_path: "/Users/me/teai_builder",
+          created_at: "2026-05-20T10:00:00Z",
+          updated_at: "2026-05-20T10:00:00Z",
+          status: "active",
+          progress: { total: 4, completed: 1, in_progress: 1, blocked: 0, percent: 25 },
+          docs: {},
+        },
         workspaceScope: {
           project_path: "/Users/me/teai_builder",
           project_name: "teai_builder",
@@ -153,16 +165,20 @@ describe("ChatList", () => {
         onToggleGroup={onToggleGroup}
         onRequestRenameProject={onRequestRenameProject}
         onNewChatInProject={onNewChatInProject}
+        onOpenProject={onOpenProject}
         projectNameOverrides={{ "/Users/me/teai_builder": "Photos" }}
         collapsedGroups={{ "project:/Users/me/teai_builder": true }}
       />,
     );
 
     const projectSection = screen.getByRole("region", { name: "Photos" });
-    fireEvent.click(within(projectSection).getByRole("button", { name: "Photos" }));
+    fireEvent.click(within(projectSection).getByRole("button", { name: "Expand project" }));
 
     expect(onToggleGroup).toHaveBeenCalledWith("project:/Users/me/teai_builder");
     expect(within(projectSection).queryByText("Alpha task")).not.toBeInTheDocument();
+
+    fireEvent.click(within(projectSection).getByRole("button", { name: "Photos 25%" }));
+    expect(onOpenProject).toHaveBeenCalledWith("proj_photos");
 
     fireEvent.click(
       within(projectSection).getByRole("button", { name: "Start a new chat in Photos" }),

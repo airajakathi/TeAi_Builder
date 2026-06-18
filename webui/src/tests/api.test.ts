@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  bootstrapProject,
   createModelConfiguration,
   deleteSession,
+  fetchFileSymbols,
   fetchFilePreview,
+  fetchWorkspaceContentSearch,
+  fetchWorkspaceProblems,
+  fetchWorkspaceReferenceSearch,
+  fetchWorkspaceSearch,
+  fetchWorkspaceSymbolSearch,
+  fetchWorkspaceTree,
   fetchCliApps,
   fetchMcpPresets,
   fetchProviderModels,
@@ -12,6 +20,7 @@ import {
   fetchSidebarState,
   fetchSkillDetail,
   fetchSkills,
+  fetchTools,
   fetchWebuiThread,
   fetchWorkspaces,
   importMcpConfig,
@@ -87,6 +96,90 @@ describe("webui API helpers", () => {
     );
   });
 
+  it("percent-encodes websocket keys when fetching the workspace tree", async () => {
+    await fetchWorkspaceTree("tok", "websocket:chat-1");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/sessions/websocket%3Achat-1/workspace-tree",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+        credentials: "same-origin",
+      }),
+    );
+  });
+
+  it("passes query and limit when fetching workspace quick-open results", async () => {
+    await fetchWorkspaceSearch("tok", "websocket:chat-1", "app ts", 25);
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/sessions/websocket%3Achat-1/workspace-search?q=app+ts&limit=25",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+        credentials: "same-origin",
+      }),
+    );
+  });
+
+  it("passes query and limit when fetching workspace content-search results", async () => {
+    await fetchWorkspaceContentSearch("tok", "websocket:chat-1", "video editor", 15);
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/sessions/websocket%3Achat-1/workspace-content-search?q=video+editor&limit=15",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+        credentials: "same-origin",
+      }),
+    );
+  });
+
+  it("passes query and limit when fetching workspace symbol-search results", async () => {
+    await fetchWorkspaceSymbolSearch("tok", "websocket:chat-1", "render preview", 12);
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/sessions/websocket%3Achat-1/workspace-symbol-search?q=render+preview&limit=12",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+        credentials: "same-origin",
+      }),
+    );
+  });
+
+  it("passes file path when fetching file symbols", async () => {
+    await fetchFileSymbols("tok", "websocket:chat-1", "/workspace/src/editor.ts");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/sessions/websocket%3Achat-1/file-symbols?path=%2Fworkspace%2Fsrc%2Feditor.ts",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+        credentials: "same-origin",
+      }),
+    );
+  });
+
+  it("passes query and limit when fetching workspace reference-search results", async () => {
+    await fetchWorkspaceReferenceSearch("tok", "websocket:chat-1", "render preview", 8);
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/sessions/websocket%3Achat-1/workspace-reference-search?q=render+preview&limit=8",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+        credentials: "same-origin",
+      }),
+    );
+  });
+
+  it("passes query and limit when fetching workspace problems", async () => {
+    await fetchWorkspaceProblems("tok", "websocket:chat-1", "syntax", 6);
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/sessions/websocket%3Achat-1/workspace-problems?q=syntax&limit=6",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+        credentials: "same-origin",
+      }),
+    );
+  });
+
   it("percent-encodes websocket keys when fetching session automations", async () => {
     await fetchSessionAutomations("tok", "websocket:chat-1");
 
@@ -105,6 +198,18 @@ describe("webui API helpers", () => {
       "/api/webui/skills",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
+      }),
+    );
+  });
+
+  it("fetches the WebUI tool summary", async () => {
+    await fetchTools("tok");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/webui/tools",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+        credentials: "same-origin",
       }),
     );
   });
@@ -535,6 +640,17 @@ describe("webui API helpers", () => {
     );
   });
 
+  it("bootstraps a new project with the requested access mode", async () => {
+    await bootstrapProject("tok", "Alpha App", "full");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/projects/bootstrap?name=Alpha+App&access_mode=full",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+      }),
+    );
+  });
+
   it("maps generated session titles from the sessions list", async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
@@ -557,6 +673,31 @@ describe("webui API helpers", () => {
         title: "优化 WebUI 标题",
         preview: "",
         runStartedAt: 1_700_000_000,
+      },
+    ]);
+  });
+
+  it("sanitizes leaked internal tool markup from session list titles and previews", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        sessions: [
+          {
+            key: "websocket:chat-2",
+            created_at: "2026-05-01T10:00:00",
+            updated_at: "2026-05-01T10:01:00",
+            title: "Built project\n<tool_call>\n<function=write_file>",
+            preview: "<tool_call>\n<function=write_file>\n<parameter=content>\n<!DOCTYPE html>",
+          },
+        ],
+      }),
+    } as Response);
+
+    await expect(listSessions("tok")).resolves.toMatchObject([
+      {
+        key: "websocket:chat-2",
+        title: "Built project",
+        preview: "",
       },
     ]);
   });

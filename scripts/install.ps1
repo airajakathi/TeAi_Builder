@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Package = "teai_builder-ai"
-$MainSource = "https://github.com/airajakathi/TeAi_Builder/archive/refs/heads/main.zip"
+$MainSource = "https://github.com/example/example/archive/refs/heads/main.zip"
 $InstallTarget = $Package
 $InstallSource = "PyPI"
 

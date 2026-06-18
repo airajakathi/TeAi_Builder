@@ -10,6 +10,7 @@ verifies, and ships production-ready apps.
 - [Capabilities](capabilities.md) — what TeAi Builder can do, in depth.
 - [Quick start](quick-start.md) — install, onboard, and run.
 - [Architecture](architecture.md) — the CEO + subagent model, phase gates, verification.
-- [Configuration](configuration.md) — `config.json` reference, including model presets
-  and the image/video/audio generation slots.
+- [Configuration](configuration.md) — config guide and common examples.
+- [Configuration reference](configuration-reference.md) — generated schema reference
+  for `config.json`, including model presets and tool settings.
 - [Publishing](publishing.md) — shipping to web, mobile app stores, and desktop.

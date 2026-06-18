@@ -92,8 +92,11 @@ class ChannelManager:
         candidate_names.update(extra.keys())
 
         enabled_names: set[str] = set()
+        extras = getattr(self.config.channels, "__pydantic_extra__", None) or {}
         for name in candidate_names:
             section = getattr(self.config.channels, name, None)
+            if section is None and name in extras:
+                section = extras[name]
             if section is None:
                 continue
             if (
@@ -123,6 +126,7 @@ class ChannelManager:
                         static_dist_path=static_path,
                         workspace_path=workspace,
                         default_restrict_to_workspace=self.config.tools.restrict_to_workspace,
+                        tools_config=self.config.tools,
                         disabled_skills=set(self.config.agents.defaults.disabled_skills),
                         runtime_model_name=self._webui_runtime_model_name,
                         runtime_surface=self._webui_runtime_surface,

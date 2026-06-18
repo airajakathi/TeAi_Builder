@@ -92,6 +92,30 @@ teai_builder gateway
 
 Then open the web UI in your browser and describe what you want built.
 
+## Development
+
+```bash
+# Create / refresh a full dev environment with tests and tooling
+uv sync --all-extras
+
+# Run Python tests
+uv run pytest tests/
+
+# Run WebUI tests
+cd webui && npm ci && npm test
+
+# Run the focused runtime smoke checks used for live validation
+uv run python scripts/runtime_smoke.py \
+  --config instance/config.json \
+  --workspace instance/workspace
+```
+
+CI includes two smoke jobs:
+- `Runtime Smoke` runs the live three-model + subagent proof flow when the repository
+  secret `STEPFUN_API_KEY` is available, and cleanly skips when that secret is absent.
+- `Gateway Smoke` always runs and verifies gateway startup, `/health`, and
+  `/webui/bootstrap` plus the served WebUI shell against a temporary local config.
+
 ## Configuration
 
 Configuration lives in `~/.teai_builder/config.json` (or an instance-local
@@ -109,7 +133,8 @@ See [`docs/`](docs/) for details.
 - [`docs/capabilities.md`](docs/capabilities.md) — what TeAi Builder can do, in depth.
 - [`docs/quick-start.md`](docs/quick-start.md) — install, onboard, run.
 - [`docs/architecture.md`](docs/architecture.md) — CEO/subagents, gates, verification.
-- [`docs/configuration.md`](docs/configuration.md) — config reference incl. models.
+- [`docs/configuration.md`](docs/configuration.md) — config guide and examples.
+- [`docs/configuration-reference.md`](docs/configuration-reference.md) — generated schema reference.
 - [`docs/publishing.md`](docs/publishing.md) — web / mobile / desktop publishing.
 
 ## License

@@ -297,6 +297,58 @@ class GatewayConfig(Base):
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
+class TelemetryConfig(Base):
+    """Local telemetry and audit trail controls."""
+
+    enabled: bool = False
+    local_audit_log: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("localAuditLog", "local_audit_log"),
+    )
+    capture_usage: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("captureUsage", "capture_usage"),
+    )
+    capture_errors: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("captureErrors", "capture_errors"),
+    )
+    max_events: int = Field(
+        default=1000,
+        ge=100,
+        le=10000,
+        validation_alias=AliasChoices("maxEvents", "max_events"),
+    )
+
+
+class CrashReportsConfig(Base):
+    """Local crash report persistence and recovery controls."""
+
+    enabled: bool = True
+    keep_reports: int = Field(
+        default=20,
+        ge=1,
+        le=200,
+        validation_alias=AliasChoices("keepReports", "keep_reports"),
+    )
+    startup_report_limit: int = Field(
+        default=5,
+        ge=0,
+        le=50,
+        validation_alias=AliasChoices("startupReportLimit", "startup_report_limit"),
+    )
+
+
+class ReliabilityConfig(Base):
+    """Operational reliability configuration."""
+
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    crash_reports: CrashReportsConfig = Field(
+        default_factory=CrashReportsConfig,
+        validation_alias=AliasChoices("crashReports", "crash_reports"),
+    )
+
+
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""
 
@@ -309,6 +361,34 @@ class MCPServerConfig(Base):
     headers: dict[str, str] = Field(default_factory=dict)  # HTTP/SSE: custom headers
     tool_timeout: int = 30  # seconds before a tool call is cancelled
     enabled_tools: list[str] = Field(default_factory=lambda: ["*"])  # Only register these tools; accepts raw MCP names or wrapped mcp_<server>_<tool> names; ["*"] = all tools; [] = no tools
+
+
+ToolPermissionMode = Literal["allow", "confirm", "deny"]
+
+
+class ToolProfileConfig(Base):
+    """Profile-based tool availability."""
+
+    description: str = ""
+    enabled_tools: list[str] = Field(default_factory=lambda: ["*"])
+    disabled_tools: list[str] = Field(default_factory=list)
+
+
+class ToolGovernanceConfig(Base):
+    """Tool availability and approval policy."""
+
+    active_profile: str = Field(
+        default="default",
+        validation_alias=AliasChoices("activeProfile", "profile", "active_profile"),
+    )
+    profiles: dict[str, ToolProfileConfig] = Field(default_factory=dict)
+    permissions: dict[str, ToolPermissionMode] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_active_profile(self) -> "ToolGovernanceConfig":
+        if self.active_profile != "default" and self.active_profile not in self.profiles:
+            raise ValueError(f"tools.governance.active_profile {self.active_profile!r} not found in profiles")
+        return self
 
 
 def _lazy_default(module_path: str, class_name: str) -> Any:
@@ -351,6 +431,7 @@ class ToolsConfig(Base):
     )  # allow WebUI Full Access shell checks against localhost services; legacy allowLocalPreviewAccess still reads
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
     ssrf_whitelist: list[str] = Field(default_factory=list)  # CIDR ranges to exempt from SSRF blocking (e.g. ["100.64.0.0/10"] for Tailscale)
+    governance: ToolGovernanceConfig = Field(default_factory=ToolGovernanceConfig)
 
 
 class Config(BaseSettings):
@@ -362,6 +443,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    reliability: ReliabilityConfig = Field(default_factory=ReliabilityConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     model_presets: dict[str, ModelPresetConfig] = Field(
         default_factory=dict,

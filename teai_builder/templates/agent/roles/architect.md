@@ -52,10 +52,17 @@ For each option, write:
 - Select the best option with a one-sentence rationale
 - Log the decision in `DECISION_LOG.md`
 - Write the architecture spec: folder structure, data models, API endpoints list, auth flow diagram (ASCII or Mermaid)
+- For backend/full-stack/SaaS work, include a **local runtime plan**:
+  - exact bootstrap command
+  - exact dev start command
+  - health check endpoint
+  - admin/seed command if auth, RBAC, or tenant bootstrapping exists
+  - how Postgres/Redis run locally (`docker-compose.yml`/`compose.yaml`) or what fallback works when those services are unavailable (SQLite/in-memory mode)
 
 ### Step 5: Produce the deliverable
 - `projects/<name>/docs/architecture.md` — full spec the build team will use
 - Updated `PROJECT.md` with chosen tech stack filled in
+- Fill in the `Local Runtime` section in `PROJECT.md`
 
 ## Verification Checklist (Required before reporting done)
 - [ ] `RESEARCH.md` exists with web search findings
@@ -63,4 +70,5 @@ For each option, write:
 - [ ] Decision logged in `DECISION_LOG.md`
 - [ ] `architecture.md` exists with: folder structure, data models, API endpoints, auth flow
 - [ ] `PROJECT.md` updated with tech stack
+- [ ] Backend/full-stack plans include a real local runtime strategy, not just cloud-only services
 - [ ] Architecture is buildable with the stated deployment target

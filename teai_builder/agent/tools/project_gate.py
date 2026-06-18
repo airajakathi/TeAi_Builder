@@ -21,6 +21,7 @@ from teai_builder.agent.tools.project_state import (
     VERIFIED_PHASES,
     latest_verification_passed,
     load_state,
+    record_artifact_value,
     resolve_project_dir,
     save_state,
 )
@@ -48,7 +49,7 @@ def _now_iso() -> str:
             nullable=True,
         ),
         platform=StringSchema(
-            "Platform for 'init'/'set_platform': web, mobile, desktop, cli.",
+            "Platform for 'init'/'set_platform': web, mobile, desktop, cli, backend, extension, bot, solution.",
             nullable=True,
         ),
         artifact=StringSchema(
@@ -56,7 +57,7 @@ def _now_iso() -> str:
             nullable=True,
         ),
         path=StringSchema(
-            "File path for 'record_artifact' (relative to the project or absolute).",
+            "File path or preview URL for 'record_artifact' (relative to the project, absolute, http(s)://, or exp://).",
             nullable=True,
         ),
         required=["action"],
@@ -88,7 +89,8 @@ class ProjectGateTool(Tool):
             "passed and required artifacts exist — so a broken build can never be "
             "reported as done. Actions: status (inspect), init (create state + "
             "platform), set_platform, record_artifact (register a produced file), "
-            "advance (move phase, validating prerequisites)."
+            "advance (move phase, validating prerequisites). Supports product "
+            "surfaces such as backend services, extensions, bots, and multi-platform solutions."
         )
 
     @property
@@ -154,6 +156,9 @@ class ProjectGateTool(Tool):
     ) -> str:
         if not artifact or not path:
             return "project_gate error: record_artifact requires artifact and path."
+        if self._is_preview_reference(path):
+            record_artifact_value(project_dir, artifact, path)
+            return f"project_gate: recorded artifact '{artifact}' -> {path}."
         candidate = Path(path)
         resolved = candidate if candidate.is_absolute() else project_dir / path
         if not resolved.exists():
@@ -162,8 +167,7 @@ class ProjectGateTool(Tool):
                 "Create the file before recording it."
             )
         rel = self._rel(resolved, project_dir)
-        state.setdefault("artifacts", {})[artifact] = rel
-        save_state(project_dir, state)
+        record_artifact_value(project_dir, artifact, rel)
         return f"project_gate: recorded artifact '{artifact}' -> {rel}."
 
     def _advance(self, state: dict[str, Any], project_dir: Path, to: str | None) -> str:
@@ -225,6 +229,10 @@ class ProjectGateTool(Tool):
                 )
             if "architecture" not in artifacts and not (project_dir / "docs" / "architecture.md").exists():
                 return False, "Missing architecture artifact required before delivery."
+            if state.get("platform") == "mobile":
+                ok, detail = self._mobile_preview_requirements(artifacts)
+                if not ok:
+                    return False, detail
         return True, ""
 
     @staticmethod
@@ -269,3 +277,26 @@ class ProjectGateTool(Tool):
             return str(path.resolve().relative_to(project_dir.resolve()))
         except (OSError, ValueError):
             return str(path)
+
+    @staticmethod
+    def _is_preview_reference(value: str) -> bool:
+        lowered = value.strip().lower()
+        return lowered.startswith(("http://", "https://", "exp://", "exp+"))
+
+    @classmethod
+    def _mobile_preview_requirements(cls, artifacts: dict[str, Any]) -> tuple[bool, str]:
+        native_ref = artifacts.get("expo_native_preview") or artifacts.get("mobile_preview")
+        web_ref = artifacts.get("expo_web_preview") or artifacts.get("web_preview")
+        if not isinstance(native_ref, str) or not native_ref.startswith(("exp://", "exp+")):
+            return (
+                False,
+                "Mobile delivery requires a recorded Expo native handoff first "
+                "(project_gate record_artifact artifact=expo_native_preview path=exp://<lan-ip>:<port>).",
+            )
+        if not isinstance(web_ref, str) or not web_ref.startswith(("http://", "https://")):
+            return (
+                False,
+                "Mobile delivery requires a recorded verified Expo web mirror "
+                "(project_gate record_artifact artifact=expo_web_preview path=http://127.0.0.1:<port>).",
+            )
+        return True, ""

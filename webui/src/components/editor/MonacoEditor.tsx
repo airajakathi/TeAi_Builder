@@ -10,15 +10,29 @@ type Props = {
   value?: string;
   onChange?: (next: string) => void;
   onSelectFile?: (file: FileMeta) => void;
+  onActiveWordChange?: (word: string | null) => void;
+  onCursorPositionChange?: (position: { line: number; column: number } | null) => void;
+  onRequestDefinition?: (word: string) => void;
+  onRequestReferences?: (word: string) => void;
   height?: number;
   readOnly?: boolean;
 };
+
+function normalizeEditorWord(word: string | null | undefined): string | null {
+  if (!word) return null;
+  const trimmed = word.trim();
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed) ? trimmed : null;
+}
 
 export function MonacoEditor({
   files,
   value = "",
   onChange,
   onSelectFile,
+  onActiveWordChange,
+  onCursorPositionChange,
+  onRequestDefinition,
+  onRequestReferences,
   height = 520,
   readOnly = false,
 }: Props) {
@@ -31,9 +45,10 @@ export function MonacoEditor({
     let disposed = false;
 
     const init = async () => {
-      const [{ editor }] = await Promise.all([
+      const [monaco] = await Promise.all([
         import("monaco-editor"),
       ]);
+      const { editor, KeyCode, KeyMod } = monaco;
 
       if (disposed || !containerRef.current) return;
 
@@ -51,8 +66,65 @@ export function MonacoEditor({
       });
 
       editorRef.current = instance;
+      const emitActiveWord = () => {
+        const model = instance.getModel?.();
+        const position = instance.getPosition?.();
+        const word = model?.getWordAtPosition?.(position);
+        onActiveWordChange?.(normalizeEditorWord(word?.word));
+      };
+      const emitCursorPosition = () => {
+        const position = instance.getPosition?.();
+        if (!position) {
+          onCursorPositionChange?.(null);
+          return;
+        }
+        onCursorPositionChange?.({
+          line: position.lineNumber,
+          column: position.column,
+        });
+      };
+      const requestDefinition = () => {
+        const model = instance.getModel?.();
+        const position = instance.getPosition?.();
+        const word = normalizeEditorWord(model?.getWordAtPosition?.(position)?.word);
+        if (word) onRequestDefinition?.(word);
+      };
+      const requestReferences = () => {
+        const model = instance.getModel?.();
+        const position = instance.getPosition?.();
+        const word = normalizeEditorWord(model?.getWordAtPosition?.(position)?.word);
+        if (word) onRequestReferences?.(word);
+      };
       instance.onDidChangeModelContent(() => {
         onChange?.(instance.getValue());
+        emitActiveWord();
+        emitCursorPosition();
+      });
+      instance.onDidChangeCursorPosition(() => {
+        emitActiveWord();
+        emitCursorPosition();
+      });
+      instance.addAction?.({
+        id: "teai_builder.go-to-definition",
+        label: "Go to Definition",
+        keybindings: [KeyCode.F12],
+        contextMenuGroupId: "navigation",
+        run: () => {
+          requestDefinition();
+        },
+      });
+      instance.addAction?.({
+        id: "teai_builder.find-references",
+        label: "Find References",
+        keybindings: [KeyMod.Shift | KeyCode.F12],
+        contextMenuGroupId: "navigation",
+        run: () => {
+          requestReferences();
+        },
+      });
+      window.requestAnimationFrame(() => {
+        emitActiveWord();
+        emitCursorPosition();
       });
     };
 
@@ -64,7 +136,7 @@ export function MonacoEditor({
         (editorRef.current as { dispose: () => void }).dispose();
       }
     };
-  }, [selected?.path, selected?.language, readOnly]);
+  }, [onActiveWordChange, onChange, onCursorPositionChange, onRequestDefinition, onRequestReferences, readOnly, selected?.language, selected?.path]);
 
   useEffect(() => {
     if (!editorRef.current) return;

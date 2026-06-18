@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import sys
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+from uuid import uuid4
 
 from teai_builder import __version__
 from teai_builder.bus.events import OutboundMessage
@@ -118,6 +120,8 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "[list|approve <code>|deny <code>|revoke <user_id>]",
     ),
 )
+
+_WORKFLOW_ACTIONS = {"start", "status", "resume", "cancel"}
 
 
 def builtin_command_palette() -> list[dict[str, str]]:
@@ -685,17 +689,271 @@ async def cmd_help(ctx: CommandContext) -> OutboundMessage:
 
 
 async def cmd_workflow(ctx: CommandContext) -> OutboundMessage:
-    """Run or inspect a built-in workflow."""
-    workflow_id = ctx.args.strip()
-    if not workflow_id:
+    """Start or manage a built-in workflow run."""
+    parts = shlex.split(ctx.args)
+    if not parts:
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
-            content="Usage: `/workflow <workflow_id>`",
+            content=(
+                "Usage:\n"
+                "- `/workflow <workflow_id> [args...]`\n"
+                "- `/workflow start <workflow_id> [args...]`\n"
+                "- `/workflow status [run_id]`\n"
+                "- `/workflow resume <run_id>`\n"
+                "- `/workflow cancel <run_id>`"
+            ),
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+    action = parts[0] if parts[0] in _WORKFLOW_ACTIONS else "start"
+    action_parts = parts[1:] if action != "start" or parts[0] in _WORKFLOW_ACTIONS else parts
+
+    from teai_builder.agent.goal_validator import Goal
+    from teai_builder.agent.llm3.workflow_library import get_workflow
+    from teai_builder.agent.llm3.workflow_models import WorkflowState
+
+    def _format_run_summary(run) -> str:
+        lines = [
+            f"Run: `{run.run_id}`",
+            f"Workflow: `{run.workflow_id}`",
+            f"State: `{run.state}`",
+        ]
+        if ctx.loop.workflow_engine.is_run_active(run.run_id):
+            lines.append("Active: `yes`")
+        if run.current_step:
+            lines.append(f"Current step: `{run.current_step}`")
+        if run.error:
+            lines.append(f"Error: {run.error}")
+        if run.step_states:
+            lines.append("")
+            lines.append("Steps:")
+            for step_run in run.step_states.values():
+                detail = f"- `{step_run.step_id}`: `{step_run.state}`"
+                if step_run.attempts:
+                    detail += f" (attempts: {step_run.attempts})"
+                if step_run.skipped_reason:
+                    detail += f" - {step_run.skipped_reason}"
+                elif step_run.error:
+                    detail += f" - {step_run.error}"
+                lines.append(detail)
+        return "\n".join(lines)
+
+    async def _publish_run_completion(run, workflow) -> None:
+        status = run.state
+        details = [
+            f"Workflow `{workflow.workflow_id}` finished with state `{status}`.",
+            "",
+            f"Run: `{run.run_id}`",
+        ]
+        if run.error:
+            details.extend(["", f"Error: {run.error}"])
+        if run.step_states:
+            details.extend(["", "Steps:"])
+            for step_run in run.step_states.values():
+                details.append(f"- `{step_run.step_id}`: `{step_run.state}`")
+        await ctx.loop.bus.publish_outbound(
+            OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content="\n".join(details),
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        )
+
+    if action == "status":
+        run_id = action_parts[0] if action_parts else None
+        load_run = getattr(ctx.loop, "load_llm3_workflow_run", None)
+        list_runs = getattr(ctx.loop, "list_llm3_workflow_runs", None)
+        if run_id:
+            run = (
+                load_run(run_id)
+                if callable(load_run)
+                else ctx.loop.workflow_engine.load_run(run_id)
+            )
+            if run is None:
+                return OutboundMessage(
+                    channel=ctx.msg.channel,
+                    chat_id=ctx.msg.chat_id,
+                    content=f"Workflow run `{run_id}` not found.",
+                    metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+                )
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=_format_run_summary(run),
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        runs = (
+            list_runs(limit=5)
+            if callable(list_runs)
+            else ctx.loop.workflow_engine.list_runs(limit=5)
+        )
+        if not runs:
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content="No workflow runs found yet.",
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        lines = ["Recent workflow runs:", ""]
+        for run in runs:
+            lines.append(f"- `{run.run_id}` `{run.workflow_id}` `{run.state}`")
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="\n".join(lines),
             metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
         )
 
-    from teai_builder.agent.workflow_engine import get_workflow
+    if action == "cancel":
+        if not action_parts:
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content="Usage: `/workflow cancel <run_id>`",
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        run_id = action_parts[0]
+        cancel_run = getattr(ctx.loop, "cancel_llm3_workflow_run", None)
+        cancelled = (
+            cancel_run(run_id)
+            if callable(cancel_run)
+            else ctx.loop.workflow_engine.request_cancel(run_id)
+        )
+        content = (
+            f"Cancellation requested for workflow run `{run_id}`."
+            if cancelled
+            else f"Could not cancel workflow run `{run_id}`."
+        )
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=content,
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    if action == "resume":
+        if not action_parts:
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content="Usage: `/workflow resume <run_id>`",
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        run_id = action_parts[0]
+        load_run = getattr(ctx.loop, "load_llm3_workflow_run", None)
+        is_active = getattr(ctx.loop, "is_llm3_workflow_active", None)
+        goal_from_run = getattr(ctx.loop, "llm3_workflow_goal_from_run", None)
+        variables_from_run = getattr(ctx.loop, "llm3_workflow_variables_from_run", None)
+        run = (
+            load_run(run_id)
+            if callable(load_run)
+            else ctx.loop.workflow_engine.load_run(run_id)
+        )
+        if run is None:
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=f"Workflow run `{run_id}` not found.",
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        if (
+            is_active(run_id)
+            if callable(is_active)
+            else ctx.loop.workflow_engine.is_run_active(run_id)
+        ):
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=f"Workflow run `{run_id}` is already active.",
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        if run.state == WorkflowState.COMPLETED:
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=f"Workflow run `{run_id}` is already completed.",
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        workflow = get_workflow(run.workflow_id)
+        goal = (
+            goal_from_run(run)
+            if callable(goal_from_run)
+            else ctx.loop.workflow_engine.goal_from_run(run)
+        )
+        variables = (
+            variables_from_run(run)
+            if callable(variables_from_run)
+            else ctx.loop.workflow_engine.variables_from_run(run)
+        )
+        if workflow is None or goal is None:
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=(
+                    f"Workflow run `{run_id}` cannot be resumed because its "
+                    "definition or goal metadata is missing."
+                ),
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        resume_workflow = getattr(ctx.loop, "resume_llm3_workflow_execution", None)
+        if callable(resume_workflow):
+            resume_workflow(
+                workflow=workflow,
+                run=run,
+                goal=goal,
+                variables=variables,
+                on_completed=_publish_run_completion,
+            )
+        else:
+            async def _resume_workflow() -> None:
+                recovery_id = None
+                start_recovery = getattr(ctx.loop, "start_llm3_workflow_recovery", None)
+                complete_recovery = getattr(ctx.loop, "complete_llm3_workflow_recovery", None)
+                sync_task_graph = getattr(ctx.loop, "sync_llm3_workflow_graph", None)
+                if callable(sync_task_graph):
+                    sync_task_graph(workflow=workflow, run=run, goal=goal)
+                if callable(start_recovery):
+                    recovery_id = start_recovery(
+                        run=run,
+                        goal=goal,
+                        reason="manual_restore",
+                    )
+                try:
+                    resumed = await ctx.loop.dynamic_workflow.execute(workflow, goal, variables, run=run)
+                    if recovery_id is not None and callable(complete_recovery):
+                        complete_recovery(
+                            recovery_id,
+                            goal=goal,
+                            run=resumed,
+                            status=resumed.state,
+                            summary=f"Workflow resume finished with state {resumed.state}",
+                        )
+                    await _publish_run_completion(resumed, workflow)
+                except Exception:
+                    if recovery_id is not None and callable(complete_recovery):
+                        complete_recovery(
+                            recovery_id,
+                            goal=goal,
+                            run=run,
+                            status="failed",
+                            summary="Workflow resume failed before completion",
+                        )
+                    raise
+
+            task = ctx.loop._schedule_background(_resume_workflow())
+            ctx.loop.workflow_engine.register_active_run(run.run_id, task)
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                f"Resumed workflow `{workflow.workflow_id}`.\n\n"
+                f"Run: `{run.run_id}`"
+            ),
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    workflow_id = action_parts[0]
     workflow = get_workflow(workflow_id)
     if workflow is None:
         return OutboundMessage(
@@ -705,22 +963,83 @@ async def cmd_workflow(ctx: CommandContext) -> OutboundMessage:
             metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
         )
 
+    required_fields = list(workflow.input_schema.get("required", []))
+    values = action_parts[1:]
+    if len(values) < len(required_fields):
+        if required_fields:
+            arg_list = " ".join(f"<{field}>" for field in required_fields)
+            usage = f"Usage: `/workflow {workflow_id} {arg_list}`"
+        else:
+            usage = f"Usage: `/workflow {workflow_id}`"
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                f"Workflow `{workflow_id}` is available.\n\n"
+                f"Name: {workflow.name}\n"
+                f"Description: {workflow.description}\n\n"
+                f"{usage}"
+            ),
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    variables = {field: values[index] for index, field in enumerate(required_fields)}
+    goal = Goal(
+        goal_id=f"{workflow_id}:{uuid4().hex[:8]}",
+        description=workflow.description,
+        success_criteria=[f"complete {step.step_id}" for step in workflow.steps],
+        metadata={
+            "workflow_id": workflow_id,
+            "variables": variables,
+            "session_key": ctx.key,
+            "channel": ctx.msg.channel,
+            "chat_id": ctx.msg.chat_id,
+        },
+    )
+    start_workflow = getattr(ctx.loop, "start_llm3_workflow_execution", None)
+    if callable(start_workflow):
+        handle = start_workflow(
+            workflow=workflow,
+            goal=goal,
+            variables=variables,
+            on_completed=_publish_run_completion,
+        )
+        run = handle.run
+    else:
+        run = ctx.loop.workflow_engine.create_run(workflow, goal, variables, executor="dynamic")
+        sync_task_graph = getattr(ctx.loop, "sync_llm3_workflow_graph", None)
+        if callable(sync_task_graph):
+            sync_task_graph(workflow=workflow, run=run, goal=goal)
+
+        async def _run_workflow() -> None:
+            completed = await ctx.loop.dynamic_workflow.execute(workflow, goal, variables, run=run)
+            await _publish_run_completion(completed, workflow)
+
+        task = ctx.loop._schedule_background(_run_workflow())
+        ctx.loop.workflow_engine.register_active_run(run.run_id, task)
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content=(
-            f"Workflow `{workflow_id}` is available.\n\n"
+            f"Started workflow `{workflow_id}`.\n\n"
+            f"Run: `{run.run_id}`\n"
             f"Name: {workflow.name}\n"
             f"Description: {workflow.description}\n\n"
-            "Use the orchestration API to start a run."
+            "Use `/workflow status "
+            f"{run.run_id}` to check progress or `/workflow cancel {run.run_id}` to stop it."
         ),
         metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
     )
 
 
 async def cmd_checkpoint(ctx: CommandContext) -> OutboundMessage:
-    """Save, restore, or list orchestration checkpoints."""
-    from teai_builder.agent.checkpoint import Checkpoint, get_checkpoint_store
+    """Save, restore, rebuild, delete, or list orchestration checkpoints."""
+    from teai_builder.agent.checkpoint import (
+        Checkpoint,
+        build_rebuild_summary,
+        get_checkpoint_store,
+        summarize_checkpoint,
+    )
 
     parts = ctx.args.strip().split()
     action = parts[0] if parts else "list"
@@ -736,12 +1055,16 @@ async def cmd_checkpoint(ctx: CommandContext) -> OutboundMessage:
             context_budget_pct=0.0,
             state={"max_iterations": ctx.loop.max_iterations},
             messages=messages,
+            metadata={
+                "kind": "session",
+                "label": " ".join(parts[1:]).strip() or None,
+            },
         )
         store.save(checkpoint)
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
-            content=f"Saved checkpoint for session `{session.key}`.",
+            content=f"Saved checkpoint `{checkpoint.checkpoint_id}` for session `{session.key}`.",
             metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
         )
 
@@ -770,6 +1093,50 @@ async def cmd_checkpoint(ctx: CommandContext) -> OutboundMessage:
             metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
         )
 
+    if action == "rebuild":
+        if len(parts) < 2:
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content="Usage: `/checkpoint rebuild <checkpoint_id>`",
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        checkpoint = store.load(session.key, parts[1])
+        if checkpoint is None:
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=f"Checkpoint `{parts[1]}` not found.",
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=build_rebuild_summary(checkpoint),
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    if action == "delete":
+        if len(parts) < 2:
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content="Usage: `/checkpoint delete <checkpoint_id>`",
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        deleted = store.delete(session.key, parts[1])
+        content = (
+            f"Deleted checkpoint `{parts[1]}`."
+            if deleted
+            else f"Checkpoint `{parts[1]}` not found."
+        )
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=content,
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
     items = store.list_for_session(session.key)
     if not items:
         return OutboundMessage(
@@ -778,11 +1145,35 @@ async def cmd_checkpoint(ctx: CommandContext) -> OutboundMessage:
             content="No checkpoints found for this session.",
             metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
         )
-    lines = ["## Checkpoints", "", f"Session: `{session.key}`", ""]
+    lines = [
+        "## Checkpoints",
+        "",
+        f"Session: `{session.key}`",
+        "",
+    ]
     for item in items:
-        lines.append(
-            f"- `{item['checkpoint_id']}` — {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(item['created_at']))}"
+        summary = summarize_checkpoint(
+            Checkpoint(
+                checkpoint_id=item["checkpoint_id"],
+                session_key=session.key,
+                created_at=item["created_at"],
+                context_budget_pct=item["context_budget_pct"],
+                state=item.get("state", {}),
+                messages=[{}] * int(item.get("message_count", 0)),
+                metadata=item.get("metadata", {}),
+            )
         )
+        line = (
+            f"- `{item['checkpoint_id']}` — "
+            f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(item['created_at']))} "
+            f"(`{summary['kind']}`"
+        )
+        if summary["workflow_id"]:
+            line += f", workflow `{summary['workflow_id']}`"
+        if summary["step_id"]:
+            line += f", step `{summary['step_id']}`"
+        line += ")"
+        lines.append(line)
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
@@ -818,17 +1209,68 @@ async def cmd_distill(ctx: CommandContext) -> OutboundMessage:
 
     action = args.split()[0]
     if action == "mine":
+        parts = args.split()[1:]
+        limit = 5
+        workflow_id: str | None = None
+        if parts:
+            try:
+                limit = max(1, min(int(parts[0]), 20))
+                if len(parts) > 1:
+                    workflow_id = parts[1]
+            except ValueError:
+                workflow_id = parts[0]
+                if len(parts) > 1:
+                    try:
+                        limit = max(1, min(int(parts[1]), 20))
+                    except ValueError:
+                        return OutboundMessage(
+                            channel=ctx.msg.channel,
+                            chat_id=ctx.msg.chat_id,
+                            content="Usage: `/distill mine [limit] [workflow_id]`",
+                            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+                        )
+        distiller = get_distiller()
+        runs = ctx.loop.workflow_engine.list_runs(workflow_id=workflow_id, limit=limit)
+        if not runs:
+            target = f" for `{workflow_id}`" if workflow_id else ""
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=f"No workflow runs found{target} to distill.",
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        mined = distiller.mine_recent_runs(runs)
+        if not mined:
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=(
+                    f"Scanned {len(runs)} workflow run(s) but did not find reusable patterns."
+                ),
+                metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+            )
+        lines = [
+            f"Mined {len(mined)} pattern(s) from {len(runs)} workflow run(s).",
+            "",
+        ]
+        for pattern in mined[:10]:
+            tags = ", ".join(f"`{tag}`" for tag in pattern.tags[:4])
+            lines.append(f"- `{pattern.pattern_id}`: {pattern.name}")
+            if tags:
+                lines.append(f"  Tags: {tags}")
+        if len(mined) > 10:
+            lines.extend(["", f"Showing 10 of {len(mined)} mined patterns."])
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
-            content="`/distill mine` is not yet implemented.",
+            content="\n".join(lines),
             metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
         )
 
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
-        content="Usage: `/distill [mine]`",
+        content="Usage: `/distill [mine [limit] [workflow_id]]`",
         metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
     )
 

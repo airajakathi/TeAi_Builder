@@ -54,3 +54,24 @@ export function sameWorkspacePath(
   if (!a || !b) return false;
   return normalizeWorkspacePath(a) === normalizeWorkspacePath(b);
 }
+
+export function isWorkspaceProjectPath(
+  projectPath: string | null | undefined,
+  workspaceRoot: string | null | undefined,
+): boolean {
+  if (!projectPath || !workspaceRoot) return false;
+  const normalizedProject = normalizeWorkspacePath(projectPath);
+  const normalizedRoot = normalizeWorkspacePath(workspaceRoot);
+  return (
+    normalizedProject !== normalizedRoot
+    && normalizedProject.startsWith(`${normalizedRoot}/`)
+  );
+}
+
+export function isProjectScopedWorkspace(
+  scope: WorkspaceScopePayload | null | undefined,
+  defaultScope: WorkspaceScopePayload | null | undefined,
+): boolean {
+  if (!scope || !defaultScope) return false;
+  return !sameWorkspacePath(scope.project_path, defaultScope.project_path);
+}

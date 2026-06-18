@@ -158,11 +158,13 @@ include = [
     "teai_builder/",
     "teai_builder/web/dist/",
     "bridge/",
+    "docs/",
     "hatch_build.py",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "pyproject.toml",
+    "scripts/",
 ]
 
 [tool.ruff]

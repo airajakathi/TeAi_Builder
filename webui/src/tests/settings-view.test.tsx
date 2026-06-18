@@ -69,6 +69,14 @@ function settingsPayload(): SettingsPayload {
       save_dir: "generated",
       providers: [],
     },
+    channels: {
+      configured: [{ name: "websocket", enabled: true }, { name: "telegram", enabled: true }],
+      send_progress: true,
+      send_tool_hints: false,
+      show_reasoning: true,
+      extract_document_text: true,
+      send_max_retries: 3,
+    },
     runtime: {
       config_path: "/tmp/config.json",
       workspace_path: "/tmp/workspace",
@@ -83,9 +91,40 @@ function settingsPayload(): SettingsPayload {
         schedule: "every 2h",
       },
       unified_session: false,
+      reliability: {
+        telemetry: {
+          enabled: true,
+          local_audit_log: true,
+          capture_usage: true,
+          capture_errors: true,
+          max_events: 1000,
+          path: "/tmp/runtime/telemetry/gateway.jsonl",
+        },
+        crash_reports: {
+          enabled: true,
+          pending_count: 0,
+          archived_count: 2,
+          path: "/tmp/runtime/crash_reports",
+        },
+        logs: {
+          path: "/tmp/runtime/logs/gateway.log",
+        },
+      },
     },
     advanced: {
       restrict_to_workspace: false,
+      workspace_sandbox: {
+        restrict_to_workspace: false,
+        workspace_root: "/tmp/workspace",
+        level: "off",
+        enforced: false,
+        provider: "none",
+        provider_label: "None",
+        exec_backend: "",
+        exec_backend_available: false,
+        exec_backend_required: false,
+        summary: "Workspace restriction is disabled.",
+      },
       webui_allow_local_service_access: true,
       webui_default_access_mode: "default",
       private_service_protection_enabled: true,
@@ -93,8 +132,25 @@ function settingsPayload(): SettingsPayload {
       mcp_server_count: 0,
       exec_enabled: true,
       exec_sandbox: null,
+      exec_strict_sandbox: true,
       exec_path_prepend_set: false,
       exec_path_append_set: false,
+      telemetry_enabled: true,
+      local_telemetry_audit_log: true,
+      crash_reports_enabled: true,
+    },
+    tool_governance: {
+      active_profile: "default",
+      profiles: [
+        {
+          name: "default",
+          description: "Implicit default profile",
+          enabled_tools: ["*"],
+          disabled_tools: [],
+          active: true,
+        },
+      ],
+      permissions: {},
     },
     requires_restart: false,
   };
@@ -159,13 +215,13 @@ const installedAnyGen = {
 
 function renderSettingsView(
   options: {
-    initialSection?: "overview" | "apps" | "advanced" | "models";
+    initialSection?: "overview" | "apps" | "advanced" | "models" | "runtime";
     initialSettings?: SettingsPayload;
     onSettingsChange?: (payload: SettingsPayload) => void;
     onNativeEngineRestart?: () => Promise<string>;
   } = {},
 ) {
-  render(
+  return render(
     <ClientProvider client={{} as never} token="tok">
       <SettingsView
         theme="light"
@@ -263,6 +319,76 @@ describe("SettingsView Apps catalog", () => {
     renderSettingsView({ onSettingsChange });
 
     await waitFor(() => expect(onSettingsChange).toHaveBeenCalledWith(payload));
+  });
+
+  it("shows channel controls in runtime settings and removes check for updates", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/settings") return jsonResponse(settingsPayload());
+        if (url === "/api/settings/cli-apps") {
+          return jsonResponse({ apps: [], installed_count: 0 });
+        }
+        if (url === "/api/settings/mcp-presets") {
+          return jsonResponse({ presets: [], installed_count: 0 });
+        }
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }),
+    );
+
+    const { unmount } = renderSettingsView({ initialSection: "runtime" });
+
+    expect(await screen.findByText("Configured channels")).toBeInTheDocument();
+    expect(screen.getByText("websocket, telegram")).toBeInTheDocument();
+    expect(screen.getByText("Send progress")).toBeInTheDocument();
+    expect(screen.getByText("Send tool hints")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check for updates" })).not.toBeInTheDocument();
+
+    unmount();
+
+    renderSettingsView({ initialSection: "overview" });
+
+    expect(await screen.findByText("Version")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check for updates" })).not.toBeInTheDocument();
+  });
+
+  it("shows runtime health cards with telemetry and crash report status", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    const payload: SettingsPayload = {
+      ...settingsPayload(),
+      runtime: {
+        ...settingsPayload().runtime,
+        reliability: {
+          telemetry: {
+            enabled: true,
+            local_audit_log: true,
+            capture_usage: true,
+            capture_errors: true,
+            max_events: 1000,
+            path: "/tmp/runtime/telemetry/gateway.jsonl",
+          },
+          crash_reports: {
+            enabled: true,
+            pending_count: 1,
+            archived_count: 5,
+            path: "/tmp/runtime/crash_reports",
+          },
+          logs: {
+            path: "/tmp/runtime/logs/gateway.log",
+          },
+        },
+      },
+    };
+
+    renderSettingsView({ initialSection: "runtime", initialSettings: payload });
+
+    expect(await screen.findByText("Runtime health")).toBeInTheDocument();
+    expect(screen.getByText("Telemetry")).toBeInTheDocument();
+    expect(screen.getByText("Crash reports")).toBeInTheDocument();
+    expect(screen.getByText("Runtime logs")).toBeInTheDocument();
+    expect(screen.getByText("1 pending crash report is waiting for review.")).toBeInTheDocument();
+    expect(screen.getAllByText("Usage + errors").length).toBeGreaterThan(0);
   });
 
   it("shows token activity on the overview", async () => {
@@ -891,6 +1017,65 @@ describe("SettingsView Apps catalog", () => {
     expect(await screen.findByText("App safety")).toBeInTheDocument();
     expect(screen.queryByText("Web safety")).not.toBeInTheDocument();
     expect(screen.getByText("Allow Full Access shell commands to reach services on this Mac.")).toBeInTheDocument();
+  });
+
+  it("shows runtime safety cards with sandbox and governance summaries", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    const base = settingsPayload();
+    const payload: SettingsPayload = {
+      ...base,
+      advanced: {
+        ...base.advanced,
+        restrict_to_workspace: true,
+        workspace_sandbox: {
+          restrict_to_workspace: true,
+          workspace_root: "/tmp/workspace",
+          level: "process",
+          enforced: true,
+          provider: "bwrap",
+          provider_label: "Bubblewrap",
+          exec_backend: "bwrap",
+          exec_backend_available: true,
+          exec_backend_required: true,
+          summary: "Workspace restriction is process-enforced for exec commands by Bubblewrap.",
+        },
+        exec_sandbox: "bwrap",
+        exec_strict_sandbox: true,
+      },
+      tool_governance: {
+        active_profile: "safe",
+        profiles: [
+          {
+            name: "default",
+            description: "Implicit default profile",
+            enabled_tools: ["*"],
+            disabled_tools: [],
+            active: false,
+          },
+          {
+            name: "safe",
+            description: "Safe tools only",
+            enabled_tools: ["read_*", "grep", "web_*"],
+            disabled_tools: ["exec"],
+            active: true,
+          },
+        ],
+        permissions: {
+          exec: "confirm",
+          apply_patch: "deny",
+        },
+      },
+    };
+
+    renderSettingsView({ initialSection: "advanced", initialSettings: payload });
+
+    expect(await screen.findByText("Runtime safety")).toBeInTheDocument();
+    expect(screen.getByText("Workspace sandbox")).toBeInTheDocument();
+    expect(screen.getByText("Process enforced")).toBeInTheDocument();
+    expect(screen.getByText("Exec safety")).toBeInTheDocument();
+    expect(screen.getByText("Fail closed")).toBeInTheDocument();
+    expect(screen.getByText("Tool governance")).toBeInTheDocument();
+    expect(screen.getByText("Safe tools only")).toBeInTheDocument();
   });
 
   it("refreshes settings with a fresh token after native engine restart", async () => {

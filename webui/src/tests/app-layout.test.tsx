@@ -211,6 +211,10 @@ vi.mock("@/lib/teai_builder-client", () => {
   return { TeaiBuilderClient: MockClient };
 });
 
+vi.mock("@/components/editor/MonacoEditor", () => ({
+  MonacoEditor: () => null,
+}));
+
 import { deriveWsUrl, fetchBootstrap } from "@/lib/bootstrap";
 import App from "@/App";
 
@@ -265,6 +269,7 @@ describe("App layout", () => {
     expect(asideClassNames.some((cls) => cls.includes("lg:block"))).toBe(true);
   });
 
+
   it("opens Skills from the main sidebar", async () => {
     mockFetchRoutes({
       "/api/settings": baseSettingsPayload(),
@@ -316,7 +321,7 @@ describe("App layout", () => {
       "aria-current",
       "page",
     );
-    expect(document.title).toBe("Skills · teai_builder");
+    expect(document.title).toBe("Skills · TeAi Builder");
 
     fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
     expect(await screen.findByText(HERO_GREETING_PATTERN)).toBeInTheDocument();
@@ -629,7 +634,7 @@ describe("App layout", () => {
 
     fireEvent.click(within(sidebar).getByRole("button", { name: "Show archived" }));
     await waitFor(() =>
-      expect(within(sidebar).getByText("Archived")).toBeInTheDocument(),
+      expect(within(sidebar).getAllByText("Archived").length).toBeGreaterThan(0),
     );
     expect(within(sidebar).getByRole("button", { name: /^First chat$/ })).toBeInTheDocument();
     const updateUrl = vi.mocked(fetch).mock.calls
@@ -878,7 +883,7 @@ describe("App layout", () => {
     render(<App />);
 
     await waitFor(() => expect(connectSpy).toHaveBeenCalled());
-    await waitFor(() => expect(document.title).toBe("Active after reload · teai_builder"));
+    await waitFor(() => expect(document.title).toBe("Active after reload · TeAi Builder"));
     const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
     expect(
       within(sidebar).getByRole("button", { name: /^Active after reload$/ }),
@@ -886,6 +891,113 @@ describe("App layout", () => {
     expect(window.location.hash).toBe(
       `#/chat/${encodeURIComponent("websocket:chat-a")}`,
     );
+  });
+
+  it("opens a selected project workspace from the sidebar and keeps the project route", async () => {
+    mockSessions = [
+      {
+        key: "websocket:alpha-chat",
+        channel: "websocket",
+        chatId: "alpha-chat",
+        createdAt: "2026-04-16T10:00:00Z",
+        updatedAt: "2026-04-16T10:00:00Z",
+        preview: "Alpha build",
+        workspaceScope: {
+          project_path: "/tmp/projects/alpha",
+          project_name: "Alpha",
+          access_mode: "restricted",
+        },
+        project: {
+          id: "proj-alpha",
+          name: "Alpha",
+          slug: "alpha",
+          root_path: "/tmp/projects/alpha",
+          created_at: "2026-04-16T09:00:00Z",
+          updated_at: "2026-04-16T10:00:00Z",
+          phase: "build",
+          status: "active",
+          progress: { total: 5, completed: 2, in_progress: 1, blocked: 0, percent: 40 },
+          docs: { project: "/tmp/projects/alpha/PROJECT.md" },
+          linked_chat_ids: ["alpha-chat"],
+          chat_count: 1,
+        },
+      },
+      {
+        key: "websocket:general-chat",
+        channel: "websocket",
+        chatId: "general-chat",
+        createdAt: "2026-04-16T11:00:00Z",
+        updatedAt: "2026-04-16T11:00:00Z",
+        preview: "General idea",
+      },
+    ];
+    mockFetchRoutes({
+      "/api/settings": baseSettingsPayload(),
+      "/api/projects": {
+        schema_version: 1,
+        projects: [mockSessions[0].project],
+      },
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
+    const projectRegion = within(sidebar).getByRole("region", { name: "Alpha" });
+    fireEvent.click(within(projectRegion).getByRole("button", { name: "Alpha 40%" }));
+
+    expect(await screen.findByText("Selected Project")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Alpha" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/projects/proj-alpha");
+    expect(within(sidebar).queryByRole("button", { name: /^General idea$/ })).not.toBeInTheDocument();
+  });
+
+  it("restores a selected project route from the URL hash after reload", async () => {
+    mockSessions = [
+      {
+        key: "websocket:alpha-chat",
+        channel: "websocket",
+        chatId: "alpha-chat",
+        createdAt: "2026-04-16T10:00:00Z",
+        updatedAt: "2026-04-16T10:00:00Z",
+        preview: "Alpha build",
+        workspaceScope: {
+          project_path: "/tmp/projects/alpha",
+          project_name: "Alpha",
+          access_mode: "restricted",
+        },
+        project: {
+          id: "proj-alpha",
+          name: "Alpha",
+          slug: "alpha",
+          root_path: "/tmp/projects/alpha",
+          created_at: "2026-04-16T09:00:00Z",
+          updated_at: "2026-04-16T10:00:00Z",
+          phase: "build",
+          status: "active",
+          progress: { total: 5, completed: 2, in_progress: 1, blocked: 0, percent: 40 },
+          docs: { project: "/tmp/projects/alpha/PROJECT.md" },
+          linked_chat_ids: ["alpha-chat"],
+          chat_count: 1,
+        },
+      },
+    ];
+    mockFetchRoutes({
+      "/api/settings": baseSettingsPayload(),
+      "/api/projects": {
+        schema_version: 1,
+        projects: [mockSessions[0].project],
+      },
+    });
+    window.history.replaceState(null, "", "/#/projects/proj-alpha");
+
+    render(<App />);
+
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    expect(await screen.findByText("Selected Project")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Alpha" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/projects/proj-alpha");
+    await waitFor(() => expect(document.title).toBe("Alpha · TeAi Builder"));
   });
 
   it("opens the settings view from the sidebar footer", async () => {
@@ -1120,7 +1232,7 @@ describe("App layout", () => {
     fireEvent.click(within(sidebar).getByRole("button", { name: "Settings" }));
 
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
-    expect(document.title).toBe("Settings · teai_builder");
+    expect(document.title).toBe("Settings · TeAi Builder");
     expect(screen.getByTestId("overview-logo-openai")).toBeInTheDocument();
     expect(screen.getByTestId("overview-logo-brave")).toBeInTheDocument();
     expect(screen.getByTestId("overview-logo-openrouter")).toBeInTheDocument();
@@ -1231,7 +1343,7 @@ describe("App layout", () => {
     expect(screen.queryByDisplayValue("unsaved-brave-key")).not.toBeInTheDocument();
 
     fireEvent.click(within(settingsNav).getByRole("button", { name: "System" }));
-    expect(screen.getByText("Bot name")).toBeInTheDocument();
+    expect(await screen.findByText("Bot name")).toBeInTheDocument();
     expect(screen.queryByText("Tool hint length")).not.toBeInTheDocument();
     expect(screen.queryByText("Heartbeat")).not.toBeInTheDocument();
     expect(screen.queryByText("Dream")).not.toBeInTheDocument();
@@ -1304,7 +1416,65 @@ describe("App layout", () => {
       "aria-current",
       "page",
     );
-    expect(document.title).toBe("Apps · teai_builder");
+    expect(document.title).toBe("Apps · TeAi Builder");
+  });
+
+  it("opens Workflows from the main sidebar without replacing the sidebar", async () => {
+    mockSessions = [
+      {
+        key: "websocket:chat-1",
+        channel: "websocket",
+        chatId: "chat-1",
+        createdAt: "2026-04-16T10:00:00Z",
+        updatedAt: "2026-04-16T10:00:00Z",
+        preview: "Release work",
+      },
+    ];
+    window.location.hash = "#/chat/websocket%3Achat-1";
+    mockFetchRoutes({
+      "/api/settings": baseSettingsPayload(),
+      "/api/workflows": { workflows: [{ workflow_id: "app_build_v1", name: "App build" }] },
+      "/api/sessions/websocket%3Achat-1/workflow-runs": {
+        items: [{
+          run_id: "run-1",
+          workflow_id: "app_build_v1",
+          goal_id: "goal-1",
+          state: "running",
+          current_step: "verify",
+          updated_at: 1720000000,
+          step_count: 3,
+          completed_steps: 2,
+        }],
+      },
+      "/api/sessions/websocket%3Achat-1/checkpoints": {
+        items: [{
+          checkpoint_id: "cp-1",
+          created_at: 1720000010,
+          kind: "workflow",
+          workflow_id: "app_build_v1",
+          step_id: "verify",
+        }],
+      },
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
+    const workflowsButton = within(sidebar).getByRole("button", { name: "Workflows" });
+
+    fireEvent.click(workflowsButton);
+
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(screen.getByText((value) => value.includes("Showing workflow activity for"))).toBeInTheDocument();
+    expect(await screen.findByText("run-1")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Sidebar navigation" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Settings sections" })).not.toBeInTheDocument();
+    expect(within(sidebar).getByRole("button", { name: "Workflows" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(document.title).toBe("Workflows · TeAi Builder");
   });
 
   it("returns from settings to the blank start page when no session was active", async () => {
@@ -1442,13 +1612,13 @@ describe("App layout", () => {
     await waitFor(() => expect(connectSpy).toHaveBeenCalled());
     const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
     fireEvent.click(within(sidebar).getByRole("button", { name: "New chat" }));
-    await waitFor(() => expect(document.title).toBe("teai_builder"));
+    await waitFor(() => expect(document.title).toBe("TeAi Builder"));
 
     fireEvent.click(within(sidebar).getByRole("button", { name: "Settings" }));
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
 
-    await waitFor(() => expect(document.title).toBe("teai_builder"));
+    await waitFor(() => expect(document.title).toBe("TeAi Builder"));
     expect(screen.getByText(HERO_GREETING_PATTERN)).toBeInTheDocument();
   });
 

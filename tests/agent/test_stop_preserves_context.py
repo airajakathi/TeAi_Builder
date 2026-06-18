@@ -4,7 +4,7 @@ When /stop cancels an active task, the runtime checkpoint (tool results,
 assistant messages accumulated so far) should be materialized into session
 history rather than silently discarded.
 
-See: https://github.com/airajakathi/TeAi_Builder/issues/2966
+See: issue #2966
 """
 
 from __future__ import annotations

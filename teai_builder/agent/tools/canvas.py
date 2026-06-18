@@ -22,10 +22,12 @@ screenshot    Request the frontend to capture the current canvas view and
 from __future__ import annotations
 
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any
 
 from teai_builder.agent.tools.base import Tool, tool_parameters
 from teai_builder.agent.tools.context import ContextAware, RequestContext
+from teai_builder.agent.tools.project_state import load_state, record_artifact_value, resolve_project_dir
 from teai_builder.agent.tools.schema import StringSchema, tool_parameters_schema
 from teai_builder.bus.events import OUTBOUND_META_AGENT_UI, OutboundMessage
 
@@ -57,8 +59,9 @@ class CanvasTool(Tool, ContextAware):
 
     _scopes = {"core"}
 
-    def __init__(self, send_callback: Any | None = None) -> None:
+    def __init__(self, send_callback: Any | None = None, workspace: str | Path | None = None) -> None:
         self._send_callback = send_callback
+        self._workspace = str(workspace) if workspace is not None else None
         self._ctx: ContextVar[RequestContext | None] = ContextVar(
             "canvas_tool_ctx", default=None
         )
@@ -66,7 +69,7 @@ class CanvasTool(Tool, ContextAware):
     @classmethod
     def create(cls, ctx: Any) -> "CanvasTool":
         callback = ctx.bus.publish_outbound if ctx.bus else None
-        return cls(send_callback=callback)
+        return cls(send_callback=callback, workspace=getattr(ctx, "workspace", None))
 
     def set_context(self, ctx: RequestContext) -> None:
         self._ctx.set(ctx)
@@ -138,5 +141,44 @@ class CanvasTool(Tool, ContextAware):
         except Exception as exc:
             return f"canvas({type}): failed to push to WebUI – {exc}"
 
+        self._record_preview_artifact(type=type, content=content)
+
         label = f" '{title}'" if title else ""
         return f"canvas: pushed {type} content{label} to WebUI workspace panel"
+
+    def _record_preview_artifact(self, *, type: str, content: str) -> None:  # noqa: A002
+        if not content:
+            return
+        project_dir, error = resolve_project_dir(self._workspace, None)
+        if project_dir is None or error:
+            return
+        state = load_state(project_dir)
+        artifact = self._artifact_name_for_preview(
+            platform=str(state.get("platform") or "unknown"),
+            preview_type=type,
+            content=content,
+        )
+        if artifact is None:
+            return
+        try:
+            record_artifact_value(project_dir, artifact, content)
+        except OSError:
+            return
+
+    @staticmethod
+    def _artifact_name_for_preview(*, platform: str, preview_type: str, content: str) -> str | None:
+        lowered = content.strip().lower()
+        normalized_platform = platform.strip().lower()
+        if preview_type == "mobile_url":
+            if lowered.startswith(("exp://", "exp+")):
+                return "expo_native_preview"
+            if lowered.startswith(("http://", "https://")):
+                return "mobile_preview"
+            return None
+        if preview_type != "url":
+            return None
+        if not lowered.startswith(("http://", "https://")):
+            return None
+        if normalized_platform == "mobile":
+            return "expo_web_preview"
+        return "web_preview"

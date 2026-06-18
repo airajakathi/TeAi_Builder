@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from teai_builder.config.paths import get_runtime_subdir
 
 
 @dataclass
@@ -67,7 +68,7 @@ class GoalValidator:
     
     def __init__(self, storage_dir: Path | None = None):
         if storage_dir is None:
-            storage_dir = Path.home() / ".teai_builder" / "goals"
+            storage_dir = get_runtime_subdir("goals")
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
     
@@ -204,6 +205,6 @@ def get_goal_validator() -> GoalValidator:
     if _goal_validator is None:
         try:
             _goal_validator = GoalValidator()
-        except PermissionError:
+        except OSError:
             _goal_validator = GoalValidator(storage_dir=Path("/tmp/teai_builder_goals"))
     return _goal_validator

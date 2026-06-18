@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
@@ -121,6 +121,7 @@ class SubagentManager:
             exec=self.tools_config.exec,
             web=self.tools_config.web,
             restrict_to_workspace=self.restrict_to_workspace,
+            governance=self.tools_config.governance,
         )
 
     def _build_tools(
@@ -136,9 +137,12 @@ class SubagentManager:
             config=cfg,
             workspace=str(root.resolve()),
             file_state_store=FileStates(),
+            worker_runtime=None,
             workspace_sandbox=workspace_sandbox_status(
                 restrict_to_workspace=cfg.restrict_to_workspace,
                 workspace=root,
+                sandbox_backend=cfg.exec.sandbox,
+                strict_execution=cfg.exec.strict_sandbox,
             ),
         )
         ToolLoader().load(ctx, registry, scope="subagent")
@@ -154,6 +158,7 @@ class SubagentManager:
         task: str,
         label: str | None = None,
         role: str | None = None,
+        model: str | None = None,
         model_preset: str | None = None,
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
@@ -163,6 +168,39 @@ class SubagentManager:
         workspace_scope: WorkspaceScope | None = None,
     ) -> str:
         """Spawn a subagent to execute a task in the background."""
+        record = await self.spawn_worker(
+            task=task,
+            label=label,
+            role=role,
+            model=model,
+            model_preset=model_preset,
+            origin_channel=origin_channel,
+            origin_chat_id=origin_chat_id,
+            session_key=session_key,
+            origin_message_id=origin_message_id,
+            temperature=temperature,
+            workspace_scope=workspace_scope,
+        )
+        return record["launch_message"]
+
+    async def spawn_worker(
+        self,
+        task: str,
+        label: str | None = None,
+        role: str | None = None,
+        model: str | None = None,
+        model_preset: str | None = None,
+        origin_channel: str = "cli",
+        origin_chat_id: str = "direct",
+        session_key: str | None = None,
+        origin_message_id: str | None = None,
+        temperature: float | None = None,
+        workspace_scope: WorkspaceScope | None = None,
+        owner_turn_id: str | None = None,
+        owner_request_id: str | None = None,
+        on_event: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> dict[str, str]:
+        """Spawn a subagent and return a typed worker launch record."""
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
         origin = {"channel": origin_channel, "chat_id": origin_chat_id, "session_key": session_key}
@@ -185,7 +223,11 @@ class SubagentManager:
                 origin_message_id,
                 temperature,
                 workspace_scope,
+                owner_turn_id=owner_turn_id,
+                owner_request_id=owner_request_id,
+                on_event=on_event,
                 role=role,
+                model=model,
                 model_preset=model_preset,
             )
         )
@@ -204,7 +246,75 @@ class SubagentManager:
         bg_task.add_done_callback(_cleanup)
 
         logger.info("Spawned subagent [{}]: {}", task_id, display_label)
-        return f"Subagent [{display_label}] started (id: {task_id}). I'll notify you when it completes."
+        launch_message = (
+            f"Subagent [{display_label}] started (id: {task_id}). "
+            "I'll notify you when it completes."
+        )
+        if on_event is not None:
+            await on_event(
+                "worker_task_started",
+                {
+                    "worker_id": task_id,
+                    "label": display_label,
+                    "status": "running",
+                    "task": task,
+                    "origin_channel": origin_channel,
+                    "origin_chat_id": origin_chat_id,
+                    "session_key": session_key,
+                    "owner_turn_id": owner_turn_id,
+                    "owner_request_id": owner_request_id,
+                },
+            )
+        return {
+            "worker_id": task_id,
+            "label": display_label,
+            "launch_message": launch_message,
+        }
+
+    async def run_worker(
+        self,
+        task: str,
+        label: str | None = None,
+        role: str | None = None,
+        model: str | None = None,
+        model_preset: str | None = None,
+        origin_channel: str = "cli",
+        origin_chat_id: str = "direct",
+        session_key: str | None = None,
+        origin_message_id: str | None = None,
+        temperature: float | None = None,
+        workspace_scope: WorkspaceScope | None = None,
+    ) -> dict[str, Any]:
+        """Execute a worker inline and return a typed execution result."""
+        task_id = str(uuid.uuid4())[:8]
+        display_label = label or task[:30] + ("..." if len(task) > 30 else "")
+        status = SubagentStatus(
+            task_id=task_id,
+            label=display_label,
+            task_description=task,
+            started_at=time.monotonic(),
+        )
+        self._task_statuses[task_id] = status
+        try:
+            return await self._execute_subagent(
+                task_id=task_id,
+                task=task,
+                label=display_label,
+                origin={
+                    "channel": origin_channel,
+                    "chat_id": origin_chat_id,
+                    "session_key": session_key,
+                },
+                status=status,
+                origin_message_id=origin_message_id,
+                temperature=temperature,
+                workspace_scope=workspace_scope,
+                role=role,
+                model=model,
+                model_preset=model_preset,
+            )
+        finally:
+            self._task_statuses.pop(task_id, None)
 
     async def _run_subagent(
         self,
@@ -216,12 +326,75 @@ class SubagentManager:
         origin_message_id: str | None = None,
         temperature: float | None = None,
         workspace_scope: WorkspaceScope | None = None,
+        owner_turn_id: str | None = None,
+        owner_request_id: str | None = None,
+        on_event: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         *,
         role: str | None = None,
+        model: str | None = None,
         model_preset: str | None = None,
     ) -> None:
         """Execute the subagent task and announce the result."""
         logger.info("Subagent [{}] starting task: {}", task_id, label)
+
+        outcome = await self._execute_subagent(
+            task_id=task_id,
+            task=task,
+            label=label,
+            origin=origin,
+            status=status,
+            origin_message_id=origin_message_id,
+            temperature=temperature,
+            workspace_scope=workspace_scope,
+            role=role,
+            model=model,
+            model_preset=model_preset,
+        )
+        if on_event is not None:
+            await on_event(
+                "worker_task_finished",
+                {
+                    "worker_id": task_id,
+                    "label": label,
+                    "status": outcome["status"],
+                    "error": outcome.get("error"),
+                    "stop_reason": outcome.get("stop_reason"),
+                    "task": task,
+                    "origin_channel": origin.get("channel"),
+                    "origin_chat_id": origin.get("chat_id"),
+                    "session_key": origin.get("session_key"),
+                    "owner_turn_id": owner_turn_id,
+                    "owner_request_id": owner_request_id,
+                },
+            )
+        await self._announce_result(
+            task_id,
+            label,
+            task,
+            outcome["final_output"],
+            origin,
+            "ok" if outcome["status"] == "completed" else "error",
+            origin_message_id,
+            owner_turn_id=owner_turn_id,
+            owner_request_id=owner_request_id,
+        )
+
+    async def _execute_subagent(
+        self,
+        *,
+        task_id: str,
+        task: str,
+        label: str,
+        origin: dict[str, str],
+        status: SubagentStatus,
+        origin_message_id: str | None = None,
+        temperature: float | None = None,
+        workspace_scope: WorkspaceScope | None = None,
+        role: str | None = None,
+        model: str | None = None,
+        model_preset: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute a worker task and return a structured outcome."""
 
         async def _on_checkpoint(payload: dict) -> None:
             status.phase = payload.get("phase", status.phase)
@@ -232,7 +405,7 @@ class SubagentManager:
         # correct provider snapshot. Create a fresh runner when the provider
         # differs from the shared one (safe for concurrent spawns on different
         # providers). Explicit temperature argument always wins over preset default.
-        run_model = self.model
+        run_model = model or self.model
         run_runner = self.runner
         run_temperature = temperature
 
@@ -296,30 +469,59 @@ class SubagentManager:
                     reset_workspace_scope(token)
             status.phase = "done"
             status.stop_reason = result.stop_reason
+            status.tool_events = list(result.tool_events)
 
             if result.stop_reason == "tool_error":
-                status.tool_events = list(result.tool_events)
-                await self._announce_result(
-                    task_id, label, task,
-                    self._format_partial_progress(result),
-                    origin, "error", origin_message_id,
-                )
-            elif result.stop_reason == "error":
-                await self._announce_result(
-                    task_id, label, task,
-                    result.error or "Error: subagent execution failed.",
-                    origin, "error", origin_message_id,
-                )
-            else:
-                final_result = result.final_content or "Task completed but no final response was generated."
-                logger.info("Subagent [{}] completed successfully", task_id)
-                await self._announce_result(task_id, label, task, final_result, origin, "ok", origin_message_id)
+                final_output = self._format_partial_progress(result)
+                return {
+                    "worker_id": task_id,
+                    "label": label,
+                    "status": "failed",
+                    "final_output": final_output,
+                    "stop_reason": result.stop_reason,
+                    "error": result.error or "Tool execution failed.",
+                    "tool_events": list(result.tool_events),
+                    "usage": dict(status.usage),
+                }
+            if result.stop_reason == "error":
+                return {
+                    "worker_id": task_id,
+                    "label": label,
+                    "status": "failed",
+                    "final_output": result.error or "Error: subagent execution failed.",
+                    "stop_reason": result.stop_reason,
+                    "error": result.error or "Error: subagent execution failed.",
+                    "tool_events": list(result.tool_events),
+                    "usage": dict(status.usage),
+                }
+
+            final_result = result.final_content or "Task completed but no final response was generated."
+            logger.info("Subagent [{}] completed successfully", task_id)
+            return {
+                "worker_id": task_id,
+                "label": label,
+                "status": "completed",
+                "final_output": final_result,
+                "stop_reason": result.stop_reason,
+                "error": None,
+                "tool_events": list(result.tool_events),
+                "usage": dict(status.usage),
+            }
 
         except Exception as e:
             status.phase = "error"
             status.error = str(e)
             logger.exception("Subagent [{}] failed", task_id)
-            await self._announce_result(task_id, label, task, f"Error: {e}", origin, "error", origin_message_id)
+            return {
+                "worker_id": task_id,
+                "label": label,
+                "status": "failed",
+                "final_output": f"Error: {e}",
+                "stop_reason": "error",
+                "error": str(e),
+                "tool_events": list(status.tool_events),
+                "usage": dict(status.usage),
+            }
 
     async def _announce_result(
         self,
@@ -330,6 +532,9 @@ class SubagentManager:
         origin: dict[str, str],
         status: str,
         origin_message_id: str | None = None,
+        *,
+        owner_turn_id: str | None = None,
+        owner_request_id: str | None = None,
     ) -> None:
         """Announce the subagent result to the main agent via the message bus."""
         status_text = "completed successfully" if status == "ok" else "failed"
@@ -351,9 +556,15 @@ class SubagentManager:
         metadata: dict[str, Any] = {
             "injected_event": "subagent_result",
             "subagent_task_id": task_id,
+            "origin_channel": origin.get("channel"),
+            "origin_chat_id": origin.get("chat_id"),
         }
         if origin_message_id:
             metadata["origin_message_id"] = origin_message_id
+        if owner_turn_id is not None:
+            metadata["owner_turn_id"] = owner_turn_id
+        if owner_request_id is not None:
+            metadata["owner_request_id"] = owner_request_id
         msg = InboundMessage(
             channel="system",
             sender_id="subagent",

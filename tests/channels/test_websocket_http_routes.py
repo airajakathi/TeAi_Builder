@@ -176,6 +176,80 @@ async def test_sessions_routes_require_bearer_token(
 
 
 @pytest.mark.asyncio
+async def test_sessions_list_includes_project_summary_for_project_scoped_chats(
+    bus: MagicMock,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "alpha"
+    project.mkdir(parents=True)
+    sm = SessionManager(tmp_path / "sessions")
+    session = Session(key="websocket:alpha-chat")
+    session.metadata["workspace_scope"] = {
+        "project_path": str(project.resolve()),
+        "access_mode": "restricted",
+    }
+    session.add_message("user", "build alpha")
+    sm.save(session)
+    channel = _ch(bus, session_manager=sm, workspace_path=workspace, port=29923)
+    server_task = asyncio.create_task(channel.start())
+    await asyncio.sleep(0.3)
+    try:
+        boot = await _http_get("http://127.0.0.1:29923/webui/bootstrap")
+        token = boot.json()["token"]
+        auth = {"Authorization": f"Bearer {token}"}
+
+        listing = await _http_get("http://127.0.0.1:29923/api/sessions", headers=auth)
+        assert listing.status_code == 200
+        item = next(s for s in listing.json()["sessions"] if s["key"] == "websocket:alpha-chat")
+        assert item["workspace_scope"]["project_path"] == str(project.resolve())
+        assert item["project"]["name"] == "alpha"
+        assert item["project"]["root_path"] == str(project.resolve())
+        assert item["project"]["chat_count"] == 1
+    finally:
+        await channel.stop()
+        await server_task
+
+
+@pytest.mark.asyncio
+async def test_projects_bootstrap_route_creates_scoped_project(
+    bus: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("teai_builder.config.paths.get_data_dir", lambda: tmp_path)
+    workspace = tmp_path / "workspace"
+    channel = _ch(bus, workspace_path=workspace, port=29924)
+    server_task = asyncio.create_task(channel.start())
+    await asyncio.sleep(0.3)
+    try:
+        boot = await _http_get("http://127.0.0.1:29924/webui/bootstrap")
+        token = boot.json()["token"]
+        auth = {"Authorization": f"Bearer {token}"}
+
+        resp = await _http_get(
+            "http://127.0.0.1:29924/api/projects/bootstrap?name=Alpha+App&access_mode=restricted",
+            headers=auth,
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["created"] is True
+        assert body["project"]["name"] == "Alpha App"
+        assert body["project"]["root_path"] == str((workspace / "alpha-app").resolve())
+        assert body["workspace_scope"]["project_path"] == str((workspace / "alpha-app").resolve())
+        assert body["workspace_scope"]["project_name"] == "Alpha App"
+        assert body["workspace_scope"]["access_mode"] == "restricted"
+        assert body["workspace_scope"]["restrict_to_workspace"] is True
+        assert (workspace / "alpha-app" / "PROJECT.md").is_file()
+        assert (workspace / "alpha-app" / "PLAN.md").is_file()
+        assert (workspace / "alpha-app" / "TASKS.md").is_file()
+        assert (workspace / "alpha-app" / ".teai_builder" / "project.json").is_file()
+    finally:
+        await channel.stop()
+        await server_task
+
+
+@pytest.mark.asyncio
 async def test_session_automations_route_filters_by_webui_session(
     bus: MagicMock, tmp_path: Path
 ) -> None:

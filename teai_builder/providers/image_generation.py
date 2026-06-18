@@ -18,7 +18,7 @@ from teai_builder.providers.registry import find_by_name
 from teai_builder.utils.helpers import detect_image_mime
 
 _OPENROUTER_ATTRIBUTION_HEADERS = {
-    "HTTP-Referer": "https://github.com/airajakathi/TeAi_Builder",
+    "HTTP-Referer": "https://github.com/example/example",
     "X-OpenRouter-Title": "teai_builder",
     "X-OpenRouter-Categories": "cli-agent,personal-agent",
 }

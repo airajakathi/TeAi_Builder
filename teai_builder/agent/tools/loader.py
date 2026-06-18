@@ -9,6 +9,7 @@ from typing import Any
 from loguru import logger
 
 from teai_builder.agent.tools.base import Tool
+from teai_builder.agent.tools.governance import ToolGovernance
 from teai_builder.agent.tools.registry import ToolRegistry
 
 _SKIP_MODULES = frozenset({
@@ -86,6 +87,7 @@ class ToolLoader:
     def load(self, ctx: Any, registry: ToolRegistry, *, scope: str = "core") -> list[str]:
         registered: list[str] = []
         builtin_names: set[str] = set()
+        governance = ToolGovernance.from_config(ctx.config)
         sources = [(self.discover(), False), (self._discover_plugins().values(), True)]
         for source, is_plugin_source in sources:
             for tool_cls in source:
@@ -96,6 +98,9 @@ class ToolLoader:
                     if not tool_cls.enabled(ctx):
                         continue
                     tool = tool_cls.create(ctx)
+                    policy = governance.policy_for(tool.name)
+                    if not policy.available:
+                        continue
                     if registry.has(tool.name):
                         if is_plugin_source and tool.name in builtin_names:
                             logger.warning(
@@ -107,7 +112,7 @@ class ToolLoader:
                             "Tool name collision: %s from %s overwrites existing",
                             tool.name, cls_label,
                         )
-                    registry.register(tool)
+                    registry.register(tool, permission=policy.permission)
                     registered.append(tool.name)
                     if not is_plugin_source:
                         builtin_names.add(tool.name)

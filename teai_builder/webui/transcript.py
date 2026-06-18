@@ -19,6 +19,7 @@ from loguru import logger
 from teai_builder.config.paths import get_webui_dir
 from teai_builder.cron.session_turns import CRON_HISTORY_META
 from teai_builder.session.manager import SessionManager
+from teai_builder.utils.helpers import write_text_atomic
 from teai_builder.webui.metadata import WEBUI_MESSAGE_SOURCE_METADATA_KEY, WEBUI_TURN_METADATA_KEY
 
 WEBUI_TRANSCRIPT_SCHEMA_VERSION = 3
@@ -187,20 +188,13 @@ def _flatten_turns(turns: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
 
 def _write_records_to_path(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            for row in rows:
-                raw = _record_json_line(row)
-                if len(raw.encode("utf-8")) > _MAX_TRANSCRIPT_FILE_BYTES:
-                    raise ValueError("webui transcript line too large")
-                f.write(raw + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
+    lines: list[str] = []
+    for row in rows:
+        raw = _record_json_line(row)
+        if len(raw.encode("utf-8")) > _MAX_TRANSCRIPT_FILE_BYTES:
+            raise ValueError("webui transcript line too large")
+        lines.append(raw)
+    write_text_atomic(path, "".join(f"{line}\n" for line in lines), fsync=True)
 
 
 def _segment_file_path(session_key: str, segment_id: str) -> Path:
@@ -266,13 +260,7 @@ def _write_segment_manifest(session_key: str, segment_ids: list[str]) -> None:
         "segments": [_segment_manifest_entry(session_key, segment_id) for segment_id in segment_ids],
     }
     path = _webui_transcript_manifest_path(session_key)
-    tmp_path = path.with_suffix(".json.tmp")
-    try:
-        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp_path, path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
+    write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
 def _rebuild_segment_manifest(session_key: str) -> list[str]:

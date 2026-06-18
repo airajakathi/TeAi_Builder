@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -18,6 +17,12 @@ from teai_builder.security.workspace_access import (
     build_workspace_scope,
     default_workspace_scope,
     validate_workspace_scope_payload,
+)
+from teai_builder.utils.helpers import write_bytes_atomic
+from teai_builder.webui.projects import (
+    bind_project_metadata,
+    project_for_session_metadata,
+    projects_payload,
 )
 
 WEBUI_WORKSPACE_STATE_SCHEMA_VERSION = 1
@@ -80,22 +85,7 @@ def write_webui_workspace_state(raw: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("workspace state is too large")
 
     path = webui_workspace_state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    with open(tmp, "wb") as f:
-        f.write(encoded)
-        f.write(b"\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-    try:
-        dir_fd = os.open(path.parent, os.O_RDONLY)
-    except OSError:
-        return state
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    write_bytes_atomic(path, encoded + b"\n", fsync=True)
     return state
 
 
@@ -179,6 +169,10 @@ class WebUIWorkspaceController:
             self._default_restrict_to_workspace,
         )
 
+    def default_workspace(self) -> Path:
+        """Return the root workspace exposed to the WebUI."""
+        return self._default_workspace
+
     def scope_for_session_key(self, session_key: str) -> WorkspaceScope:
         if self._sessions is None:
             return self.default_scope()
@@ -193,14 +187,36 @@ class WebUIWorkspaceController:
                 default_restrict_to_workspace=self._default_restrict_to_workspace,
                 source_channel=_WEBUI_SCOPE_CHANNEL,
             )
-        except WorkspaceScopeError:
-            return self.default_scope()
+        except WorkspaceScopeError as e:
+            logger.warning("invalid persisted WebUI workspace scope for {}: {}", session_key, e)
+            return default_scope_for_webui(
+                self._default_workspace,
+                True,
+            )
 
     def payload(self, *, controls_available: bool) -> dict[str, Any]:
         return workspaces_payload(
             default_workspace=self._default_workspace,
             default_restrict_to_workspace=self._default_restrict_to_workspace,
             controls_available=controls_available,
+        )
+
+    def project_for_session_key(self, session_key: str) -> dict[str, Any] | None:
+        if self._sessions is None:
+            return None
+        data = self._sessions.read_session_file(session_key)
+        metadata = data.get("metadata", {}) if isinstance(data, dict) else {}
+        scope = self.scope_for_session_key(session_key)
+        return project_for_session_metadata(
+            metadata,
+            scope=scope,
+            default_workspace=self._default_workspace,
+        )
+
+    def projects_payload(self) -> dict[str, Any]:
+        return projects_payload(
+            session_manager=self._sessions,
+            default_workspace=self._default_workspace,
         )
 
     def scope_from_envelope(
@@ -232,11 +248,16 @@ class WebUIWorkspaceController:
         *,
         controls_available: bool,
     ) -> WorkspaceScope:
-        return self.scope_from_envelope(
+        scope = self.scope_from_envelope(
             envelope,
             session_key=None,
             controls_available=controls_available,
         )
+        if scope.project_path.resolve(strict=False) == self._default_workspace.resolve(strict=False):
+            raise WorkspaceScopeError(
+                "Select or create a project before starting a new chat."
+            )
+        return scope
 
     def scope_for_set_request(
         self,
@@ -275,9 +296,16 @@ class WebUIWorkspaceController:
             raise WorkspaceScopeError("chat_running", status=409)
         return scope
 
-    def persist_scope(self, chat_id: str, scope: WorkspaceScope) -> None:
+    def persist_scope(self, chat_id: str, scope: WorkspaceScope) -> dict[str, Any] | None:
         if self._sessions is not None:
             session = self._sessions.get_or_create(f"websocket:{chat_id}")
             session.metadata["webui"] = True
             session.metadata[WORKSPACE_SCOPE_METADATA_KEY] = scope.metadata()
+            project = bind_project_metadata(
+                session.metadata,
+                scope=scope,
+                default_workspace=self._default_workspace,
+            )
             self._sessions.save(session)
+            return project
+        return None

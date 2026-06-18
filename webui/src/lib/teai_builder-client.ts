@@ -1,5 +1,6 @@
 import type {
   ConnectionStatus,
+  FilePreviewPayload,
   InboundEvent,
   Outbound,
   OutboundCliAppMention,
@@ -7,6 +8,7 @@ import type {
   OutboundMcpPresetMention,
   OutboundMedia,
   GoalStateWsPayload,
+  ProjectSummary,
   WorkspaceScopePayload,
 } from "./types";
 import { createHostWebSocket } from "./runtime";
@@ -71,6 +73,7 @@ type SessionUpdateHandler = (
   chatId: string,
   scope?: SessionUpdateScope,
   workspaceScope?: WorkspaceScopePayload,
+  project?: ProjectSummary | null,
 ) => void;
 type RunStatusHandler = (chatId: string, startedAt: number | null) => void;
 
@@ -97,6 +100,12 @@ interface PendingNewChat {
 
 interface PendingTranscription {
   resolve: (text: string) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface PendingFileSave {
+  resolve: (payload: FilePreviewPayload) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -139,6 +148,7 @@ export class TeaiBuilderClient {
   private goalStateByChatId = new Map<string, GoalStateWsPayload>();
   private pendingNewChat: PendingNewChat | null = null;
   private pendingTranscriptions = new Map<string, PendingTranscription>();
+  private pendingFileSaves = new Map<string, PendingFileSave>();
   // Frames queued while the socket is not yet OPEN
   private sendQueue: Outbound[] = [];
   private reconnectAttempts = 0;
@@ -417,6 +427,32 @@ export class TeaiBuilderClient {
     });
   }
 
+  saveFile(
+    chatId: string,
+    path: string,
+    content: string,
+    options?: { timeoutMs?: number; baseRevision?: string },
+  ): Promise<FilePreviewPayload> {
+    const timeoutMs = options?.timeoutMs ?? 15_000;
+    const requestId = `save-${Math.random().toString(36).slice(2, 10)}`;
+    this.knownChats.add(chatId);
+    return new Promise<FilePreviewPayload>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingFileSaves.delete(requestId);
+        reject(new Error("saveFile timed out"));
+      }, timeoutMs);
+      this.pendingFileSaves.set(requestId, { resolve, reject, timer });
+      this.queueSend({
+        type: "save_file",
+        request_id: requestId,
+        chat_id: chatId,
+        path,
+        content,
+        ...(options?.baseRevision ? { base_revision: options.baseRevision } : {}),
+      });
+    });
+  }
+
   // -- internals ---------------------------------------------------------
 
   private setStatus(status: ConnectionStatus): void {
@@ -488,8 +524,18 @@ export class TeaiBuilderClient {
       return;
     }
 
+    if (parsed.event === "file_saved") {
+      this.resolveFileSave(parsed.request_id, parsed.payload);
+      return;
+    }
+
+    if (parsed.event === "file_save_failed") {
+      this.rejectFileSave(parsed.request_id, parsed.detail || "error");
+      return;
+    }
+
     if (parsed.event === "session_updated") {
-      this.emitSessionUpdate(parsed.chat_id, parsed.scope, parsed.workspace_scope);
+      this.emitSessionUpdate(parsed.chat_id, parsed.scope, parsed.workspace_scope, parsed.project);
       return;
     }
 
@@ -532,9 +578,10 @@ export class TeaiBuilderClient {
     chatId: string,
     scope?: SessionUpdateScope,
     workspaceScope?: WorkspaceScopePayload,
+    project?: ProjectSummary | null,
   ): void {
     for (const handler of this.sessionUpdateHandlers) {
-      handler(chatId, scope, workspaceScope);
+      handler(chatId, scope, workspaceScope, project);
     }
   }
 
@@ -572,6 +619,7 @@ export class TeaiBuilderClient {
       this.pendingNewChat = null;
     }
     this.rejectAllTranscriptions("socket closed");
+    this.rejectAllFileSaves("socket closed");
     // Surface structured reasons *before* reconnect logic so the UI can
     // display the error even while the client transparently reconnects.
     // Browsers populate ``CloseEvent.code`` with the wire-level close code;
@@ -625,6 +673,34 @@ export class TeaiBuilderClient {
       clearTimeout(pending.timer);
       pending.reject(new Error(detail));
       this.pendingTranscriptions.delete(requestId);
+    }
+  }
+
+  private resolveFileSave(requestId: string, payload: FilePreviewPayload): void {
+    const pending = this.pendingFileSaves.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingFileSaves.delete(requestId);
+    pending.resolve(payload);
+  }
+
+  private rejectFileSave(requestId: string | undefined, detail: string): void {
+    if (!requestId) {
+      this.rejectAllFileSaves(detail);
+      return;
+    }
+    const pending = this.pendingFileSaves.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingFileSaves.delete(requestId);
+    pending.reject(new Error(detail));
+  }
+
+  private rejectAllFileSaves(detail: string): void {
+    for (const [requestId, pending] of this.pendingFileSaves) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(detail));
+      this.pendingFileSaves.delete(requestId);
     }
   }
 

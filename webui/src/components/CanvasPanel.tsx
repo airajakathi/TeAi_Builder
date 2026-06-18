@@ -17,11 +17,14 @@ import {
 import QRCode from "qrcode";
 import {
   Code2,
+  Copy,
   ExternalLink,
   Globe,
   ImageIcon,
   Monitor,
+  MonitorSmartphone,
   RefreshCw,
+  RotateCw,
   Smartphone,
   Terminal,
   Trash2,
@@ -32,6 +35,8 @@ import {
   Plus,
   ChevronLeft,
   ChevronRight,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { CanvasItem, CanvasItemType } from "@/hooks/useCanvasContent";
@@ -88,20 +93,141 @@ function typeLabel(type: CanvasItemType): string {
   }
 }
 
+type BrowserDevice = "desktop" | "tablet" | "mobile";
+type MobileDeviceShell = "ios" | "android";
+type DeviceOrientation = "portrait" | "landscape";
+
+const BROWSER_DEVICE_WIDTHS: Record<BrowserDevice, number | string> = {
+  desktop: "100%",
+  tablet: 820,
+  mobile: 390,
+};
+
+const MOBILE_DEVICE_SHELL_SIZES: Record<MobileDeviceShell, { portrait: { width: number; height: number }; landscape: { width: number; height: number } }> = {
+  ios: {
+    portrait: { width: 220, height: 440 },
+    landscape: { width: 440, height: 220 },
+  },
+  android: {
+    portrait: { width: 240, height: 460 },
+    landscape: { width: 460, height: 240 },
+  },
+};
+
+function clampPreviewZoom(value: number): number {
+  return Math.min(2, Math.max(0.5, Number.parseFloat(value.toFixed(2))));
+}
+
+function zoomLabel(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+type PreviewLoadState = "loading" | "ready" | "slow" | "error";
+
+const PREVIEW_LOAD_TIMEOUT_MS = 8000;
+
+declare global {
+  interface Window {
+    __TEAI_EXPO_DEBUG__?: boolean;
+  }
+}
+
+// #region debug-point A:expo-preview-report
+function reportExpoPreviewDebug(
+  hypothesisId: "A" | "B" | "C" | "D" | "E",
+  location: string,
+  msg: string,
+  data: Record<string, unknown>,
+): void {
+  if (typeof window === "undefined" || window.__TEAI_EXPO_DEBUG__ !== true) {
+    return;
+  }
+  fetch("http://127.0.0.1:7777/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "expo-white-screen",
+      runId: "pre-fix",
+      hypothesisId,
+      location,
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => undefined);
+}
+// #endregion
+
+function previewDiagnoseMessage(title: string | undefined, url: string): string {
+  const previewLabel = title?.trim() || "the current preview";
+  return (
+    `Diagnose and fix ${previewLabel}. ` +
+    `The workspace preview for ${url} is slow, blank, or failing to load. ` +
+    `Open the preview directly, inspect runtime or console errors, fix the underlying app issue, ` +
+    `then re-run verification and confirm the preview renders correctly.`
+  );
+}
+
+async function copyTextToClipboard(value: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  if (typeof window !== "undefined" && typeof window.prompt === "function") {
+    window.prompt("Copy this link", value);
+  }
+}
+
 // ── Sub-views ──────────────────────────────────────────────────────────────
 
 // --- Browser View ---
-function BrowserView({ item }: { item: CanvasItem }) {
+function BrowserView({
+  item,
+  onSendToTeaiBuilder,
+}: {
+  item: CanvasItem;
+  onSendToTeaiBuilder?: (text: string) => void;
+}) {
   const [url, setUrl] = useState(item.content);
   const [inputVal, setInputVal] = useState(item.content);
-  const [iframeError, setIframeError] = useState(false);
+  const [previewState, setPreviewState] = useState<PreviewLoadState>("loading");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [zoom, setZoom] = useState(1);
+  const [device, setDevice] = useState<BrowserDevice>("desktop");
+  const [copied, setCopied] = useState(false);
+  const [slowPreviewCount, setSlowPreviewCount] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const previousPreviewStateRef = useRef<PreviewLoadState>("loading");
 
   useEffect(() => {
     setUrl(item.content);
     setInputVal(item.content);
-    setIframeError(false);
+    setPreviewState("loading");
+    setRefreshKey(0);
+    setZoom(1);
+    setSlowPreviewCount(0);
   }, [item.content]);
+
+  useEffect(() => {
+    if (previewState === "ready") {
+      setSlowPreviewCount(0);
+    }
+    if (
+      previewState === "slow" &&
+      previousPreviewStateRef.current !== "slow"
+    ) {
+      setSlowPreviewCount((current) => current + 1);
+    }
+    previousPreviewStateRef.current = previewState;
+  }, [previewState]);
+
+  useEffect(() => {
+    setPreviewState("loading");
+    const timeoutId = window.setTimeout(() => {
+      setPreviewState((current) => (current === "loading" ? "slow" : current));
+    }, PREVIEW_LOAD_TIMEOUT_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [url, refreshKey]);
 
   const navigate = (target: string) => {
     let normalized = target.trim();
@@ -110,23 +236,93 @@ function BrowserView({ item }: { item: CanvasItem }) {
     }
     setUrl(normalized);
     setInputVal(normalized);
-    setIframeError(false);
+    setPreviewState("loading");
   };
 
   const reload = () => {
-    setIframeError(false);
-    if (iframeRef.current) {
-      iframeRef.current.src = url;
-    }
+    setPreviewState("loading");
+    setRefreshKey((current) => current + 1);
+  };
+
+  const browserWidth = BROWSER_DEVICE_WIDTHS[device];
+  const browserWidthStyle = typeof browserWidth === "number" ? `${browserWidth}px` : browserWidth;
+  const canZoomOut = zoom > 0.5;
+  const canZoomIn = zoom < 2;
+  const recommendDiagnose = slowPreviewCount >= 2;
+
+  const handleCopy = () => {
+    void copyTextToClipboard(url).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    }).catch(() => undefined);
+  };
+
+  const handleDiagnose = () => {
+    onSendToTeaiBuilder?.(previewDiagnoseMessage(item.title, url));
   };
 
   return (
     <div className="flex flex-col h-full">
       {/* Address bar */}
       <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-white/10 bg-black/20">
-        <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" onClick={reload} title="Reload">
+        <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" onClick={reload} title="Reload" aria-label="Reload preview">
           <RefreshCw size={12} />
         </Button>
+        <div className="hidden items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-1 py-0.5 text-white/60 sm:flex">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 shrink-0"
+            onClick={() => setZoom((current) => clampPreviewZoom(current - 0.1))}
+            title="Zoom out"
+            disabled={!canZoomOut}
+            aria-label="Zoom out"
+          >
+            <ZoomOut size={11} />
+          </Button>
+          <button
+            type="button"
+            className="min-w-[3rem] rounded px-1 py-0.5 text-[10px] font-medium text-white/75 hover:bg-white/10"
+            onClick={() => setZoom(1)}
+            title="Reset zoom"
+          >
+            {zoomLabel(zoom)}
+          </button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 shrink-0"
+            onClick={() => setZoom((current) => clampPreviewZoom(current + 0.1))}
+            title="Zoom in"
+            disabled={!canZoomIn}
+            aria-label="Zoom in"
+          >
+            <ZoomIn size={11} />
+          </Button>
+        </div>
+        <div className="hidden items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] p-0.5 md:flex">
+          {([
+            ["desktop", "Desktop", Monitor],
+            ["tablet", "Tablet", MonitorSmartphone],
+            ["mobile", "Mobile", Smartphone],
+          ] as const).map(([value, label, Icon]) => (
+            <Button
+              key={value}
+              variant="ghost"
+              size="sm"
+              className={cn(
+                "h-6 gap-1 px-2 text-[10px] text-white/55 hover:text-white",
+                device === value && "bg-white/10 text-white",
+              )}
+              onClick={() => setDevice(value)}
+              title={`${label} preview`}
+              aria-label={`${label} preview`}
+            >
+              <Icon size={11} />
+              {label}
+            </Button>
+          ))}
+        </div>
         <input
           type="text"
           value={inputVal}
@@ -137,38 +333,134 @@ function BrowserView({ item }: { item: CanvasItem }) {
           placeholder="http://localhost:3000"
         />
         <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 shrink-0"
+          onClick={handleCopy}
+          title={copied ? "Copied" : "Copy URL"}
+          aria-label="Copy preview URL"
+        >
+          <Copy size={12} />
+        </Button>
+        <Button
           variant="ghost" size="icon" className="h-6 w-6 shrink-0"
-          onClick={() => window.open(url, "_blank")} title="Open in new tab"
+          onClick={() => window.open(url, "_blank")} title="Open in new tab" aria-label="Open preview in new tab"
         >
           <ExternalLink size={12} />
         </Button>
+        {previewState === "loading" ? (
+          <span className="hidden shrink-0 text-[10px] text-white/45 lg:inline">Loading preview…</span>
+        ) : null}
+        {previewState === "slow" ? (
+          <span className="hidden shrink-0 text-[10px] text-amber-300/80 lg:inline">
+            {recommendDiagnose ? "Preview is repeatedly getting stuck" : "Preview is taking longer than expected"}
+          </span>
+        ) : null}
       </div>
 
       {/* iframe */}
-      <div className="flex-1 relative bg-white">
-        {iframeError ? (
+      <div className="flex-1 relative overflow-auto bg-zinc-950">
+        {previewState === "error" ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 p-6 text-center bg-zinc-900">
             <Globe size={40} className="text-white/20" />
             <p className="text-sm text-white/50">
-              This page cannot be embedded (Content-Security-Policy).
+              This preview could not load in the workspace. The app may be blocking iframe
+              embedding, failing to start, or stuck during first render.
             </p>
-            <Button
-              variant="outline" size="sm"
-              className="text-xs border-white/20 hover:bg-white/10"
-              onClick={() => window.open(url, "_blank")}
-            >
-              <ExternalLink size={12} className="mr-1.5" /> Open in new tab
-            </Button>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs border-white/20 hover:bg-white/10"
+                onClick={reload}
+              >
+                Retry preview
+              </Button>
+              {onSendToTeaiBuilder ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs border-white/20 hover:bg-white/10"
+                  onClick={handleDiagnose}
+                >
+                  Diagnose in TeAI Builder
+                </Button>
+              ) : null}
+              <Button
+                variant="outline" size="sm"
+                className="text-xs border-white/20 hover:bg-white/10"
+                onClick={() => window.open(url, "_blank")}
+              >
+                <ExternalLink size={12} className="mr-1.5" /> Open in new tab
+              </Button>
+            </div>
           </div>
         ) : (
-          <iframe
-            ref={iframeRef}
-            src={url}
-            title="Canvas Preview"
-            className="w-full h-full border-0"
-            sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals allow-downloads allow-presentation"
-            onError={() => setIframeError(true)}
-          />
+          <div
+            className="relative flex min-h-full min-w-full justify-center p-4"
+            data-testid="browser-preview-frame"
+            data-preview-device={device}
+            data-preview-zoom={zoomLabel(zoom)}
+            data-preview-state={previewState}
+          >
+            {previewState !== "ready" ? (
+              <div className="absolute inset-x-4 top-4 z-10 flex justify-center">
+                <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/70 px-3 py-1 text-[11px] text-white/70 shadow-lg backdrop-blur">
+                  <span>
+                    {previewState === "slow"
+                      ? (recommendDiagnose
+                        ? "Preview is repeatedly getting stuck. Diagnose is recommended."
+                        : "Preview is taking longer than expected.")
+                      : "Loading preview…"}
+                  </span>
+                  {previewState === "slow" ? (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-[10px] text-white/80 hover:text-white"
+                        onClick={reload}
+                      >
+                        Retry
+                      </Button>
+                      {onSendToTeaiBuilder ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-[10px] text-white/80 hover:text-white"
+                          onClick={handleDiagnose}
+                        aria-label={recommendDiagnose ? "Diagnose recommended" : "Diagnose"}
+                        >
+                          {recommendDiagnose ? "Diagnose Recommended" : "Diagnose"}
+                        </Button>
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            <div
+              className="origin-top"
+              style={{
+                width: browserWidthStyle,
+                minWidth: typeof browserWidth === "number" ? `${browserWidth}px` : undefined,
+                height: "100%",
+                minHeight: `calc((100vh - 9rem) / ${zoom})`,
+                transform: `scale(${zoom})`,
+              }}
+            >
+              <iframe
+                key={`${url}-${refreshKey}`}
+                ref={iframeRef}
+                src={url}
+                title="Canvas Preview"
+                className="h-full w-full rounded-[18px] border-0 bg-white shadow-2xl"
+                sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals allow-downloads allow-presentation"
+                onLoad={() => setPreviewState("ready")}
+                onError={() => setPreviewState("error")}
+              />
+            </div>
+          </div>
         )}
       </div>
     </div>
@@ -176,14 +468,29 @@ function BrowserView({ item }: { item: CanvasItem }) {
 }
 
 // --- Mobile View ---
-function MobileView({ item }: { item: CanvasItem }) {
+function MobileView({
+  item,
+  onSendToTeaiBuilder,
+}: {
+  item: CanvasItem;
+  onSendToTeaiBuilder?: (text: string) => void;
+}) {
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [deviceShell, setDeviceShell] = useState<MobileDeviceShell>("ios");
+  const [orientation, setOrientation] = useState<DeviceOrientation>("portrait");
+  const [zoom, setZoom] = useState(1);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const [webPreviewState, setWebPreviewState] = useState<PreviewLoadState>("loading");
+  const [slowPreviewCount, setSlowPreviewCount] = useState(0);
   const url = item.content;
+  const previousPreviewStateRef = useRef<PreviewLoadState>("loading");
 
   // exp:// is a native deep link — cannot be loaded in iframe
   const isExpoUrl = url.startsWith("exp://") || url.startsWith("exp+");
   // http(s):// can be shown in iframe
   const isWebUrl = url.startsWith("http://") || url.startsWith("https://");
+  const derivedExpoPreviewUrl = isExpoUrl ? url.replace(/^exp(\+[^:]*)?:\/\//, "http://") : null;
 
   useEffect(() => {
     if (!url) return;
@@ -197,90 +504,378 @@ function MobileView({ item }: { item: CanvasItem }) {
       .catch(() => setQrDataUrl(null));
   }, [url]);
 
-  // ── Expo native app view (live web preview + QR) ─────────────────────────
-  if (isExpoUrl) {
-    // Derive the web preview URL from the exp:// URL (react-native-web bundle)
-    const webPreviewUrl = url.replace(/^exp(\+[^:]*)?:\/\//, "http://");
-    return (
-      <div className="flex items-start justify-center gap-6 p-5 h-full overflow-auto"
-        style={{ background: "linear-gradient(160deg, #1a1034 0%, #0f1724 100%)" }}>
+  useEffect(() => {
+    // #region debug-point A:mobile-view-mode
+    reportExpoPreviewDebug("A", "CanvasPanel.tsx:MobileView:mode", "Mobile preview mode selected", {
+      itemType: item.type,
+      originalUrl: url,
+      isExpoUrl,
+      isWebUrl,
+      derivedExpoPreviewUrl,
+      title: item.title ?? null,
+    });
+    // #endregion
+  }, [derivedExpoPreviewUrl, isExpoUrl, isWebUrl, item.title, item.type, url]);
 
-        {/* Live preview phone mockup */}
-        <div className="flex flex-col items-center gap-2 shrink-0">
-          <div className="relative"
-            style={{
-              width: 360, height: 720,
-              background: "#1a1a1a",
-              borderRadius: 54,
-              border: "10px solid #333",
-              padding: 12,
-              boxShadow: "0 0 60px rgba(76,142,247,0.35), 0 0 0 1px #555",
-            }}>
-            <div style={{
-              position: "absolute", top: 18, left: "50%", transform: "translateX(-50%)",
-              width: 90, height: 8, background: "#333", borderRadius: 4, zIndex: 10,
-            }} />
-            <div style={{ width: "100%", height: "100%", borderRadius: 44, overflow: "hidden", background: "#fff" }}>
-              <iframe
-                src={webPreviewUrl}
-                title="Live App Preview"
-                style={{ width: "100%", height: "100%", border: "none" }}
-                sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
-              />
-            </div>
-          </div>
-          <span className="text-[11px] text-white/40 font-medium">Live preview</span>
-        </div>
+  useEffect(() => {
+    // #region debug-point B:mobile-preview-shell-state
+    reportExpoPreviewDebug("B", "CanvasPanel.tsx:MobileView:shell", "Mobile preview shell state updated", {
+      deviceShell,
+      orientation,
+      zoom: zoomLabel(zoom),
+      originalUrl: url,
+      derivedExpoPreviewUrl,
+    });
+    // #endregion
+  }, [derivedExpoPreviewUrl, deviceShell, orientation, url, zoom]);
 
-        {/* QR + branding + steps */}
-        <div className="flex flex-col items-center gap-4 pt-2 max-w-[240px]">
-          {/* Expo branding */}
-          <div className="flex items-center gap-2 self-start">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center"
-              style={{ background: "linear-gradient(135deg, #4c8ef7, #a259f7)" }}>
-              <Smartphone size={18} className="text-white" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-white">{item.title ?? "Expo App"}</p>
-              <p className="text-[11px] text-white/40">Real device via Expo Go</p>
-            </div>
-          </div>
+  useEffect(() => {
+    setRefreshKey(0);
+    setZoom(1);
+    setWebPreviewState("loading");
+    setSlowPreviewCount(0);
+  }, [url]);
 
-          {/* QR Code */}
-          {qrDataUrl ? (
-            <div className="flex flex-col items-center gap-2">
-              <div className="rounded-2xl overflow-hidden p-3 bg-white shadow-2xl"
-                style={{ boxShadow: "0 0 30px rgba(76,142,247,0.3)" }}>
-                <img src={qrDataUrl} alt="Expo QR Code" width={160} height={160} />
-              </div>
-              <p className="text-[10px] text-white/40 font-mono px-3 py-1 rounded bg-white/5 border border-white/10 max-w-[230px] truncate">
-                {url}
-              </p>
-            </div>
-          ) : (
-            <div className="w-[160px] h-[160px] rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center">
-              <span className="text-white/30 text-xs">Generating QR…</span>
-            </div>
-          )}
+  useEffect(() => {
+    if (webPreviewState === "ready") {
+      setSlowPreviewCount(0);
+    }
+    if (
+      webPreviewState === "slow" &&
+      previousPreviewStateRef.current !== "slow"
+    ) {
+      setSlowPreviewCount((current) => current + 1);
+    }
+    previousPreviewStateRef.current = webPreviewState;
+  }, [webPreviewState]);
 
-          {/* Steps */}
-          <div className="flex flex-col gap-1.5 w-full">
-            {[
-              ["1", "Install Expo Go", "App Store / Play Store"],
-              ["2", "Same WiFi as this PC", "required for connection"],
-              ["3", "Scan the QR code", "app opens on your phone"],
-            ].map(([n, title, sub]) => (
-              <div key={n} className="flex items-start gap-2 p-2 rounded-lg bg-white/5 border border-white/8">
-                <span className="w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center shrink-0 mt-0.5"
-                  style={{ background: "linear-gradient(135deg, #4c8ef7, #a259f7)", color: "#fff" }}>
-                  {n}
+  useEffect(() => {
+    if (!isWebUrl) return;
+    setWebPreviewState("loading");
+    const timeoutId = window.setTimeout(() => {
+      setWebPreviewState((current) => (current === "loading" ? "slow" : current));
+    }, PREVIEW_LOAD_TIMEOUT_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [isWebUrl, url, refreshKey, deviceShell, orientation]);
+
+  const dimensions = MOBILE_DEVICE_SHELL_SIZES[deviceShell][orientation];
+  const canZoomOut = zoom > 0.5;
+  const canZoomIn = zoom < 2;
+  const previewTitle = item.title ?? "Mobile App";
+  const recommendDiagnose = slowPreviewCount >= 2;
+  const handleRefresh = () => setRefreshKey((current) => current + 1);
+  const handleCopy = () => {
+    void copyTextToClipboard(url).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    }).catch(() => undefined);
+  };
+  const handleDiagnose = () => {
+    onSendToTeaiBuilder?.(previewDiagnoseMessage(item.title, url));
+  };
+  const mobileFrame = (sourceUrl: string, title: string) => (
+    <div className="flex flex-col items-center gap-2 shrink-0">
+      <div
+        className={cn(
+          "relative rounded-[36px] border bg-[#1a1a1a] p-2 shadow-[0_0_0_1px_#555,inset_0_0_8px_rgba(0,0,0,0.5)]",
+          orientation === "portrait" ? "rounded-[36px]" : "rounded-[28px]",
+        )}
+        data-testid="mobile-preview-frame"
+        data-mobile-device={deviceShell}
+        data-mobile-orientation={orientation}
+        data-preview-zoom={zoomLabel(zoom)}
+        data-preview-state={webPreviewState}
+        style={{
+          width: dimensions.width,
+          height: dimensions.height,
+          transform: `scale(${zoom})`,
+          transformOrigin: "top center",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            top: orientation === "portrait" ? 12 : 8,
+            left: "50%",
+            transform: "translateX(-50%)",
+            width: orientation === "portrait" ? 60 : 44,
+            height: 6,
+            background: "#333",
+            borderRadius: 3,
+            zIndex: 10,
+          }}
+        />
+        <div className="h-full w-full overflow-hidden rounded-[28px] bg-white">
+          {webPreviewState !== "ready" ? (
+            <div className="absolute inset-x-4 top-8 z-10 flex justify-center">
+              <div className="flex items-center gap-2 rounded-full border border-black/10 bg-black/70 px-3 py-1 text-[10px] text-white/75 shadow-lg backdrop-blur">
+                <span>
+                  {webPreviewState === "slow"
+                    ? (recommendDiagnose
+                      ? "Preview is repeatedly getting stuck. Diagnose is recommended."
+                      : "Preview is slow or may be stuck.")
+                    : "Loading mobile preview…"}
                 </span>
-                <div>
-                  <p className="text-[11px] text-white/80 font-medium">{title}</p>
-                  <p className="text-[10px] text-white/35">{sub}</p>
-                </div>
+                {webPreviewState === "slow" ? (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-[10px] text-white/80 hover:text-white"
+                      onClick={handleRefresh}
+                    >
+                      Retry
+                    </Button>
+                    {onSendToTeaiBuilder ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-[10px] text-white/80 hover:text-white"
+                        onClick={handleDiagnose}
+                        aria-label={recommendDiagnose ? "Diagnose recommended" : "Diagnose"}
+                      >
+                        {recommendDiagnose ? "Diagnose Recommended" : "Diagnose"}
+                      </Button>
+                    ) : null}
+                  </>
+                ) : null}
               </div>
+            </div>
+          ) : null}
+          <iframe
+            key={`${sourceUrl}-${refreshKey}-${deviceShell}-${orientation}`}
+            src={sourceUrl}
+            title={title}
+            style={{ width: "100%", height: "100%", border: "none" }}
+            sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
+            onLoad={() => {
+              // #region debug-point C:mobile-iframe-load
+              reportExpoPreviewDebug("C", "CanvasPanel.tsx:MobileView:iframe-load", "Mobile iframe loaded", {
+                sourceUrl,
+                title,
+                originalUrl: url,
+                deviceShell,
+                orientation,
+                zoom: zoomLabel(zoom),
+                refreshKey,
+              });
+              // #endregion
+              setWebPreviewState("ready");
+            }}
+            onError={() => {
+              // #region debug-point C:mobile-iframe-error
+              reportExpoPreviewDebug("C", "CanvasPanel.tsx:MobileView:iframe-error", "Mobile iframe error", {
+                sourceUrl,
+                title,
+                originalUrl: url,
+                deviceShell,
+                orientation,
+                zoom: zoomLabel(zoom),
+                refreshKey,
+              });
+              // #endregion
+              setWebPreviewState("error");
+            }}
+          />
+          {webPreviewState === "error" ? (
+            <div className="absolute inset-4 z-20 flex flex-col items-center justify-center gap-2 rounded-[22px] border border-white/10 bg-black/80 px-4 text-center">
+              <p className="text-xs font-medium text-white">Mobile preview failed to load</p>
+              <p className="text-[10px] leading-relaxed text-white/60">
+                The app may not be serving correctly or it may be crashing during first render.
+              </p>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 border-white/20 px-3 text-[10px] hover:bg-white/10"
+                  onClick={handleRefresh}
+                >
+                  Retry preview
+                </Button>
+                {onSendToTeaiBuilder ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 border-white/20 px-3 text-[10px] hover:bg-white/10"
+                    onClick={handleDiagnose}
+                  >
+                    Diagnose in TeAI Builder
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <span className="text-[11px] text-white/40 font-medium">{title}</span>
+    </div>
+  );
+
+  const expoNativeFrame = (
+    <div className="flex flex-col items-center gap-2 shrink-0">
+      <div
+        className={cn(
+          "relative rounded-[36px] border bg-[#1a1a1a] p-2 shadow-[0_0_0_1px_#555,inset_0_0_8px_rgba(0,0,0,0.5)]",
+          orientation === "portrait" ? "rounded-[36px]" : "rounded-[28px]",
+        )}
+        data-testid="mobile-preview-frame"
+        data-mobile-device={deviceShell}
+        data-mobile-orientation={orientation}
+        data-preview-zoom={zoomLabel(zoom)}
+        style={{
+          width: dimensions.width,
+          height: dimensions.height,
+          transform: `scale(${zoom})`,
+          transformOrigin: "top center",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            top: orientation === "portrait" ? 12 : 8,
+            left: "50%",
+            transform: "translateX(-50%)",
+            width: orientation === "portrait" ? 60 : 44,
+            height: 6,
+            background: "#333",
+            borderRadius: 3,
+            zIndex: 10,
+          }}
+        />
+        <div className="flex h-full w-full flex-col items-center justify-center gap-3 overflow-hidden rounded-[28px] border border-white/5 bg-[radial-gradient(circle_at_top,_rgba(76,142,247,0.25),_transparent_55%),linear-gradient(180deg,_rgba(15,23,36,0.96),_rgba(9,12,20,1))] px-6 text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/5">
+            <Smartphone size={26} className="text-white/85" />
+          </div>
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-white">Expo Native Preview</p>
+            <p className="text-[11px] leading-relaxed text-white/55">
+              TeAI Builder keeps the real `exp://` link for Expo Go instead of embedding
+              a misleading white-screen iframe.
+            </p>
+          </div>
+          {derivedExpoPreviewUrl ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-white/20 bg-white/5 text-[11px] text-white hover:bg-white/10"
+              onClick={() => window.open(derivedExpoPreviewUrl, "_blank")}
+              title="Open Expo web mirror"
+              aria-label="Open Expo web mirror"
+            >
+              <Globe size={12} className="mr-1.5" />
+              Open Web Mirror
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      <span className="text-[11px] text-white/40 font-medium">Expo Go / Native Preview</span>
+    </div>
+  );
+
+  // ── Expo native app view (QR + native handoff) ───────────────────────────
+  if (isExpoUrl) {
+    return (
+      <div className="flex h-full flex-col overflow-hidden" style={{ background: "linear-gradient(160deg, #1a1034 0%, #0f1724 100%)" }}>
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-white/10 bg-black/20 px-2 py-1.5">
+          <Button variant="ghost" size="icon" className="h-6 w-6 text-white/70 hover:text-white" onClick={handleRefresh} title="Refresh mobile preview" aria-label="Refresh mobile preview">
+            <RefreshCw size={12} />
+          </Button>
+          <div className="flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-1 py-0.5 text-white/60">
+            <Button variant="ghost" size="icon" className="h-5 w-5 text-white/60 hover:text-white" onClick={() => setZoom((current) => clampPreviewZoom(current - 0.1))} title="Zoom out" disabled={!canZoomOut} aria-label="Zoom out">
+              <ZoomOut size={11} />
+            </Button>
+            <button type="button" className="min-w-[3rem] rounded px-1 py-0.5 text-[10px] font-medium text-white/75 hover:bg-white/10" onClick={() => setZoom(1)} title="Reset zoom">
+              {zoomLabel(zoom)}
+            </button>
+            <Button variant="ghost" size="icon" className="h-5 w-5 text-white/60 hover:text-white" onClick={() => setZoom((current) => clampPreviewZoom(current + 0.1))} title="Zoom in" disabled={!canZoomIn} aria-label="Zoom in">
+              <ZoomIn size={11} />
+            </Button>
+          </div>
+          <div className="flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] p-0.5">
+            {([
+              ["ios", "iPhone", Smartphone],
+              ["android", "Android", Smartphone],
+            ] as const).map(([value, label, Icon]) => (
+              <Button
+                key={value}
+                variant="ghost"
+                size="sm"
+                className={cn("h-6 gap-1 px-2 text-[10px] text-white/55 hover:text-white", deviceShell === value && "bg-white/10 text-white")}
+                onClick={() => setDeviceShell(value)}
+                title={`${label} shell`}
+                aria-label={`${label} shell`}
+              >
+                <Icon size={11} />
+                {label}
+              </Button>
             ))}
+          </div>
+          <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] text-white/60 hover:text-white" onClick={() => setOrientation((current) => current === "portrait" ? "landscape" : "portrait")} title="Rotate device" aria-label="Rotate device">
+            <RotateCw size={11} />
+            {orientation === "portrait" ? "Portrait" : "Landscape"}
+          </Button>
+          <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] text-white/60 hover:text-white" onClick={handleCopy} title={copied ? "Copied" : "Copy mobile preview link"} aria-label="Copy mobile preview link">
+            <Copy size={11} />
+            {copied ? "Copied" : "Copy link"}
+          </Button>
+          <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] text-white/60 hover:text-white" onClick={() => window.open(url, "_blank")} title="Open mobile preview externally" aria-label="Open mobile preview externally">
+            <ExternalLink size={11} />
+            Open
+          </Button>
+        </div>
+        <div className="flex items-start justify-center gap-6 overflow-auto p-5">
+          {expoNativeFrame}
+
+          {/* QR + branding + steps */}
+          <div className="flex flex-col items-center gap-4 pt-2 max-w-[240px]">
+          {/* Expo branding */}
+            <div className="flex items-center gap-2 self-start">
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center"
+                style={{ background: "linear-gradient(135deg, #4c8ef7, #a259f7)" }}>
+                <Smartphone size={18} className="text-white" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-white">{previewTitle}</p>
+                <p className="text-[11px] text-white/40">Real device via Expo Go</p>
+              </div>
+            </div>
+
+            {/* QR Code */}
+            {qrDataUrl ? (
+              <div className="flex flex-col items-center gap-2">
+                <div className="rounded-2xl overflow-hidden p-3 bg-white shadow-2xl"
+                  style={{ boxShadow: "0 0 30px rgba(76,142,247,0.3)" }}>
+                  <img src={qrDataUrl} alt="Expo QR Code" width={160} height={160} />
+                </div>
+                <p className="text-[10px] text-white/40 font-mono px-3 py-1 rounded bg-white/5 border border-white/10 max-w-[230px] truncate">
+                  {url}
+                </p>
+              </div>
+            ) : (
+              <div className="w-[160px] h-[160px] rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center">
+                <span className="text-white/30 text-xs">Generating QR…</span>
+              </div>
+            )}
+
+            {/* Steps */}
+            <div className="flex flex-col gap-1.5 w-full">
+              {[
+                ["1", "Install Expo Go", "App Store / Play Store"],
+                ["2", "Same WiFi as this PC", "required for connection"],
+                ["3", "Scan the QR code", "app opens on your phone"],
+              ].map(([n, title, sub]) => (
+                <div key={n} className="flex items-start gap-2 p-2 rounded-lg bg-white/5 border border-white/8">
+                  <span className="w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center shrink-0 mt-0.5"
+                    style={{ background: "linear-gradient(135deg, #4c8ef7, #a259f7)", color: "#fff" }}>
+                    {n}
+                  </span>
+                  <div>
+                    <p className="text-[11px] text-white/80 font-medium">{title}</p>
+                    <p className="text-[10px] text-white/35">{sub}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -289,58 +884,88 @@ function MobileView({ item }: { item: CanvasItem }) {
 
   // ── Web URL view (http/https) — show iframe + QR ─────────────────────────
   return (
-    <div className="flex items-start justify-center gap-6 p-4 h-full overflow-auto">
-      {/* Phone mockup */}
-      <div className="flex flex-col items-center gap-2 shrink-0">
-        <div className="relative"
-          style={{
-            width: 220, height: 440,
-            background: "#1a1a1a",
-            borderRadius: 36,
-            border: "6px solid #333",
-            padding: 8,
-            boxShadow: "0 0 0 1px #555, inset 0 0 8px rgba(0,0,0,0.5)",
-          }}>
-          <div style={{
-            position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
-            width: 60, height: 6, background: "#333", borderRadius: 3, zIndex: 10,
-          }} />
-          <div style={{ width: "100%", height: "100%", borderRadius: 28, overflow: "hidden", background: "#fff" }}>
-            {isWebUrl ? (
-              <iframe
-                src={url}
-                title="Mobile Preview"
-                style={{ width: "100%", height: "100%", border: "none" }}
-                sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals"
-              />
-            ) : (
-              <div className="flex items-center justify-center h-full text-zinc-400 text-xs p-4 text-center">
-                Preview not available for this URL type
-              </div>
-            )}
-          </div>
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-white/10 bg-black/20 px-2 py-1.5">
+        <Button variant="ghost" size="icon" className="h-6 w-6 text-white/70 hover:text-white" onClick={handleRefresh} title="Refresh mobile preview" aria-label="Refresh mobile preview">
+          <RefreshCw size={12} />
+        </Button>
+        <div className="flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-1 py-0.5 text-white/60">
+          <Button variant="ghost" size="icon" className="h-5 w-5 text-white/60 hover:text-white" onClick={() => setZoom((current) => clampPreviewZoom(current - 0.1))} title="Zoom out" disabled={!canZoomOut} aria-label="Zoom out">
+            <ZoomOut size={11} />
+          </Button>
+          <button type="button" className="min-w-[3rem] rounded px-1 py-0.5 text-[10px] font-medium text-white/75 hover:bg-white/10" onClick={() => setZoom(1)} title="Reset zoom">
+            {zoomLabel(zoom)}
+          </button>
+          <Button variant="ghost" size="icon" className="h-5 w-5 text-white/60 hover:text-white" onClick={() => setZoom((current) => clampPreviewZoom(current + 0.1))} title="Zoom in" disabled={!canZoomIn} aria-label="Zoom in">
+            <ZoomIn size={11} />
+          </Button>
         </div>
-        <span className="text-xs text-white/40 font-mono">{url.replace(/^https?:\/\//, "")}</span>
+        <div className="flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] p-0.5">
+          {([
+            ["ios", "iPhone", Smartphone],
+            ["android", "Android", Smartphone],
+          ] as const).map(([value, label, Icon]) => (
+            <Button
+              key={value}
+              variant="ghost"
+              size="sm"
+              className={cn("h-6 gap-1 px-2 text-[10px] text-white/55 hover:text-white", deviceShell === value && "bg-white/10 text-white")}
+              onClick={() => setDeviceShell(value)}
+              title={`${label} shell`}
+              aria-label={`${label} shell`}
+            >
+              <Icon size={11} />
+              {label}
+            </Button>
+          ))}
+        </div>
+        <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] text-white/60 hover:text-white" onClick={() => setOrientation((current) => current === "portrait" ? "landscape" : "portrait")} title="Rotate device" aria-label="Rotate device">
+          <RotateCw size={11} />
+          {orientation === "portrait" ? "Portrait" : "Landscape"}
+        </Button>
+        <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] text-white/60 hover:text-white" onClick={handleCopy} title={copied ? "Copied" : "Copy mobile preview link"} aria-label="Copy mobile preview link">
+          <Copy size={11} />
+          {copied ? "Copied" : "Copy link"}
+        </Button>
+        <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] text-white/60 hover:text-white" onClick={() => window.open(url, "_blank")} title="Open mobile preview externally" aria-label="Open mobile preview externally">
+          <ExternalLink size={11} />
+          Open
+        </Button>
       </div>
-
-      {/* QR + info */}
-      <div className="flex flex-col items-center gap-3 pt-4">
-        <p className="text-xs text-white/50 text-center max-w-[140px]">Scan to open on mobile</p>
-        {qrDataUrl ? (
-          <div className="rounded-xl overflow-hidden border-4 border-white">
-            <img src={qrDataUrl} alt="QR Code" width={160} height={160} />
-          </div>
-        ) : (
-          <div className="w-[160px] h-[160px] rounded-xl bg-white/10 flex items-center justify-center">
-            <span className="text-white/30 text-xs">Generating…</span>
+      <div className="flex items-start justify-center gap-6 overflow-auto p-4">
+      {/* Phone mockup */}
+        {isWebUrl ? mobileFrame(url, "Mobile Preview") : (
+          <div
+            className="flex items-center justify-center rounded-[28px] border border-white/10 bg-black/30 p-6 text-center text-xs text-zinc-400"
+            data-testid="mobile-preview-frame"
+            data-mobile-device={deviceShell}
+            data-mobile-orientation={orientation}
+            data-preview-zoom={zoomLabel(zoom)}
+          >
+            Preview not available for this URL type
           </div>
         )}
-        <Button
-          variant="ghost" size="sm" className="h-7 text-xs text-white/60 hover:text-white gap-1.5"
-          onClick={() => window.open(url, "_blank")}
-        >
-          <ExternalLink size={11} /> Open in browser
-        </Button>
+
+        {/* QR + info */}
+        <div className="flex flex-col items-center gap-3 pt-4">
+          <p className="text-xs text-white/50 text-center max-w-[140px]">Scan to open on mobile</p>
+          {qrDataUrl ? (
+            <div className="rounded-xl overflow-hidden border-4 border-white">
+              <img src={qrDataUrl} alt="QR Code" width={160} height={160} />
+            </div>
+          ) : (
+            <div className="w-[160px] h-[160px] rounded-xl bg-white/10 flex items-center justify-center">
+              <span className="text-white/30 text-xs">Generating…</span>
+            </div>
+          )}
+          <Button
+            variant="ghost" size="sm" className="h-7 text-xs text-white/60 hover:text-white gap-1.5"
+            onClick={() => window.open(url, "_blank")}
+          >
+            <ExternalLink size={11} /> Open in browser
+          </Button>
+          <span className="max-w-[180px] truncate text-[11px] text-white/40 font-mono">{url.replace(/^https?:\/\//, "")}</span>
+        </div>
       </div>
     </div>
   );
@@ -532,8 +1157,8 @@ function ActiveItemView({
   onSendToTeaiBuilder?: (t: string) => void;
 }) {
   switch (item.type) {
-    case "url":        return <BrowserView item={item} />;
-    case "mobile_url": return <MobileView item={item} />;
+    case "url":        return <BrowserView item={item} onSendToTeaiBuilder={onSendToTeaiBuilder} />;
+    case "mobile_url": return <MobileView item={item} onSendToTeaiBuilder={onSendToTeaiBuilder} />;
     case "html":       return <HtmlView item={item} />;
     case "image":      return <ImageView item={item} />;
     case "video":      return <VideoView item={item} />;

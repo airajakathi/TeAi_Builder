@@ -8,7 +8,6 @@ presentation caches.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +22,7 @@ from teai_builder.session.manager import (
     _message_preview_text,
     _metadata_title,
 )
+from teai_builder.utils.helpers import write_text_atomic
 
 _INDEX_VERSION = 2
 _INDEX_FILENAME = ".webui_session_index.json"
@@ -91,14 +91,8 @@ def _read_index_rows(sessions_dir: Path) -> list[dict[str, Any]] | None:
 
 def _write_index_rows(sessions_dir: Path, rows: list[dict[str, Any]]) -> None:
     path = _index_path(sessions_dir)
-    tmp_path = path.with_suffix(".json.tmp")
     data = {"version": _INDEX_VERSION, "sessions": rows}
-    try:
-        tmp_path.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
-        os.replace(tmp_path, path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
+    write_text_atomic(path, json.dumps(data, ensure_ascii=False) + "\n")
 
 
 def _file_signature(path: Path) -> dict[str, int]:

@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import type { ProjectSummary } from "@/lib/types";
 
 interface ThreadHeaderProps {
   title: string;
@@ -14,8 +15,10 @@ interface ThreadHeaderProps {
   hostChromeTitleInset?: boolean;
   hideThemeButton?: boolean;
   minimal?: boolean;
+  quickOpenAction?: ReactNode;
   promptNavigatorAction?: ReactNode;
   sessionInfoAction?: ReactNode;
+  project?: ProjectSummary | null;
   canvasOpen?: boolean;
   canvasHasContent?: boolean;
   onToggleCanvas?: () => void;
@@ -30,8 +33,10 @@ export function ThreadHeader({
   hostChromeTitleInset = false,
   hideThemeButton = false,
   minimal = false,
+  quickOpenAction,
   promptNavigatorAction,
   sessionInfoAction,
+  project = null,
   canvasOpen = false,
   canvasHasContent = false,
   onToggleCanvas,
@@ -60,14 +65,24 @@ export function ThreadHeader({
           <Menu className="h-3.5 w-3.5" />
         </Button>
         {!minimal ? (
-          <div className="flex min-w-0 items-center rounded-md px-1.5 py-1 text-[12px] font-medium text-muted-foreground">
-            <span className="max-w-[min(60vw,32rem)] truncate">{title}</span>
+          <div className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-[12px] font-medium text-muted-foreground">
+            <span className="max-w-[min(42vw,24rem)] truncate">{title}</span>
+            {project ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2 py-0.5 text-[11px] text-foreground/85">
+                <span className="max-w-[12rem] truncate">{project.name}</span>
+                <span className="text-muted-foreground/80">{project.progress.percent}%</span>
+                {project.phase ? (
+                  <span className="text-muted-foreground/70">{project.phase}</span>
+                ) : null}
+              </span>
+            ) : null}
           </div>
         ) : null}
       </div>
 
       <div className="ml-auto flex shrink-0 items-center gap-1">
         {sessionInfoAction}
+        {quickOpenAction}
         {promptNavigatorAction}
         {onToggleCanvas ? (
           <div className="relative">

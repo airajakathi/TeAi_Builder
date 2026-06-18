@@ -180,6 +180,23 @@ describe("useTeaiBuilderStream", () => {
     });
   });
 
+  it("drops leaked internal tool-call markup from complete assistant messages", () => {
+    const fake = fakeClient();
+    const { result } = renderHook(() => useTeaiBuilderStream("chat-tool-leak", EMPTY_MESSAGES), {
+      wrapper: wrap(fake.client),
+    });
+
+    act(() => {
+      fake.emit("chat-tool-leak", {
+        event: "message",
+        chat_id: "chat-tool-leak",
+        text: "<tool_call>\n<function=write_file>\n<parameter=content>\n<!DOCTYPE html>",
+      });
+    });
+
+    expect(result.current.messages).toEqual([]);
+  });
+
   it("does not start streaming from completed trailing activity after an answer", () => {
     const fake = fakeClient();
     const initialMessages = [

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from teai_builder.config.paths import get_runtime_subdir
+
 
 class DependencyError(Exception):
     """Raised when task dependencies cannot be satisfied."""
@@ -91,7 +93,7 @@ class MergedResult:
 class ResultMerger:
     def __init__(self, storage_dir: Path | None = None) -> None:
         if storage_dir is None:
-            storage_dir = Path.home() / ".teai_builder" / "results"
+            storage_dir = get_runtime_subdir("results")
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 

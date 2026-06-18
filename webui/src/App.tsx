@@ -1,4 +1,6 @@
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useMemo,
@@ -12,7 +14,6 @@ import { DeleteConfirm } from "@/components/DeleteConfirm";
 import { RenameChatDialog } from "@/components/RenameChatDialog";
 import { Sidebar } from "@/components/Sidebar";
 import { SessionSearchDialog } from "@/components/SessionSearchDialog";
-import { SettingsView, type SettingsSectionKey } from "@/components/settings/SettingsView";
 import { ThreadShell } from "@/components/thread/ThreadShell";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
@@ -35,6 +36,7 @@ import { TeaiBuilderClient } from "@/lib/teai_builder-client";
 import { ClientProvider, useClient } from "@/providers/ClientProvider";
 import type {
   ChatSummary,
+  ProjectSummary,
   RuntimeSurface,
   SessionAutomationJob,
   SettingsPayload,
@@ -43,13 +45,34 @@ import type {
 } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { fetchSettings, fetchWorkspaces } from "@/lib/api";
+import { fetchProjects, fetchSettings, fetchWorkspaces } from "@/lib/api";
 import {
   createRuntimeHost,
   getHostApi,
   toRuntimeSurface,
 } from "@/lib/runtime";
-import { projectNameFromPath } from "@/lib/workspace";
+import {
+  projectNameFromPath,
+  sameWorkspacePath,
+  selectedProjectScope as resolveProjectScope,
+} from "@/lib/workspace";
+
+const SettingsView = lazy(async () => {
+  const mod = await import("@/components/settings/SettingsView");
+  return { default: mod.SettingsView };
+});
+
+const WorkflowDashboardView = lazy(async () => {
+  const mod = await import("@/components/workflows/WorkflowDashboardView");
+  return { default: mod.WorkflowDashboardView };
+});
+
+type SettingsSectionKey = import("@/components/settings/SettingsView").SettingsSectionKey;
+
+function preloadShellViewModules(): void {
+  void import("@/components/settings/SettingsView");
+  void import("@/components/workflows/WorkflowDashboardView");
+}
 
 type BootState =
   | { status: "loading" }
@@ -71,10 +94,11 @@ const SIDEBAR_WIDTH = 272;
 const SIDEBAR_RAIL_WIDTH = 56;
 const TOKEN_REFRESH_MARGIN_MS = 30_000;
 const TOKEN_REFRESH_MIN_DELAY_MS = 5_000;
-type ShellView = "chat" | "settings" | "apps" | "skills";
+type ShellView = "chat" | "settings" | "apps" | "skills" | "workflows";
 type ShellRoute = {
   view: ShellView;
   activeKey: string | null;
+  projectId: string | null;
   settingsSection: SettingsSectionKey;
 };
 
@@ -96,7 +120,7 @@ function isSettingsSectionKey(value: string | null): value is SettingsSectionKey
 }
 
 function defaultShellRoute(): ShellRoute {
-  return { view: "chat", activeKey: null, settingsSection: "overview" };
+  return { view: "chat", activeKey: null, projectId: null, settingsSection: "overview" };
 }
 
 function shellViewForSettingsSection(section: SettingsSectionKey): ShellView {
@@ -118,26 +142,56 @@ function readShellRoute(): ShellRoute {
     ? rawSettingsSection
     : "overview";
   const activeKey = params.get("chat")?.trim() || null;
+  const projectId = params.get("project")?.trim() || null;
 
   if (path === "/settings") {
     return {
       view: shellViewForSettingsSection(settingsSection),
       activeKey,
+      projectId,
       settingsSection,
     };
   }
   if (path === "/apps") {
-    return { view: "apps", activeKey, settingsSection: "apps" };
+    return { view: "apps", activeKey, projectId, settingsSection: "apps" };
   }
   if (path === "/skills") {
-    return { view: "skills", activeKey, settingsSection: "skills" };
+    return { view: "skills", activeKey, projectId, settingsSection: "skills" };
+  }
+  if (path === "/workflows") {
+    return { view: "workflows", activeKey, projectId, settingsSection: "overview" };
+  }
+  if (path.startsWith("/projects/")) {
+    const rest = path.slice("/projects/".length);
+    const [encodedProjectId, ...segments] = rest.split("/");
+    try {
+      const parsedProjectId = decodeURIComponent(encodedProjectId).trim();
+      if (!parsedProjectId) return defaultShellRoute();
+      if (segments[0] === "chat" && segments.length > 1) {
+        const key = decodeURIComponent(segments.slice(1).join("/")).trim();
+        return {
+          view: "chat",
+          activeKey: key || null,
+          projectId: parsedProjectId,
+          settingsSection: "overview",
+        };
+      }
+      return {
+        view: "chat",
+        activeKey: null,
+        projectId: parsedProjectId,
+        settingsSection: "overview",
+      };
+    } catch {
+      return defaultShellRoute();
+    }
   }
   if (path.startsWith("/chat/")) {
     const encoded = path.slice("/chat/".length);
     try {
       const key = decodeURIComponent(encoded).trim();
       return key
-        ? { view: "chat", activeKey: key, settingsSection: "overview" }
+        ? { view: "chat", activeKey: key, projectId: null, settingsSection: "overview" }
         : defaultShellRoute();
     } catch {
       return defaultShellRoute();
@@ -148,12 +202,18 @@ function readShellRoute(): ShellRoute {
 
 function shellRouteHash(route: ShellRoute): string {
   if (route.view === "chat") {
+    if (route.projectId) {
+      return route.activeKey
+        ? `#/projects/${encodeURIComponent(route.projectId)}/chat/${encodeURIComponent(route.activeKey)}`
+        : `#/projects/${encodeURIComponent(route.projectId)}`;
+    }
     return route.activeKey
       ? `#/chat/${encodeURIComponent(route.activeKey)}`
       : "#/new";
   }
   const params = new URLSearchParams();
   if (route.activeKey) params.set("chat", route.activeKey);
+  if (route.projectId) params.set("project", route.projectId);
   if (route.view === "settings" && route.settingsSection !== "overview") {
     params.set("section", route.settingsSection);
   }
@@ -327,6 +387,148 @@ function HostChrome({
         </div>
       ) : null}
     </header>
+  );
+}
+
+function buildProjectScope(
+  project: ProjectSummary,
+  fallback: WorkspaceScopePayload | null,
+): WorkspaceScopePayload {
+  const accessMode = fallback?.access_mode === "restricted" ? "restricted" : "full";
+  return normalizeWorkspaceScope({
+    project_path: project.root_path,
+    project_name: project.name,
+    access_mode: accessMode,
+    restrict_to_workspace: accessMode === "restricted",
+  });
+}
+
+function ProjectOverviewPanel({
+  project,
+  onCreateChat,
+}: {
+  project: ProjectSummary;
+  onCreateChat: () => void;
+}) {
+  const docs = Object.entries(project.docs);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-auto">
+      <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 px-6 pb-8 pt-24">
+        <div className="rounded-3xl border border-border/70 bg-card/80 p-6 shadow-sm backdrop-blur">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0 space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground/75">
+                Selected Project
+              </p>
+              <h1 className="truncate text-3xl font-semibold tracking-tight">{project.name}</h1>
+              <p className="text-sm text-muted-foreground">{project.root_path}</p>
+            </div>
+            <Button onClick={onCreateChat}>Open project chat</Button>
+          </div>
+          <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border border-border/60 bg-background/60 p-4">
+              <p className="text-xs text-muted-foreground">Status</p>
+              <p className="mt-1 text-sm font-medium capitalize">{project.status}</p>
+            </div>
+            <div className="rounded-2xl border border-border/60 bg-background/60 p-4">
+              <p className="text-xs text-muted-foreground">Phase</p>
+              <p className="mt-1 text-sm font-medium">{project.phase || "Not set"}</p>
+            </div>
+            <div className="rounded-2xl border border-border/60 bg-background/60 p-4">
+              <p className="text-xs text-muted-foreground">Progress</p>
+              <p className="mt-1 text-sm font-medium">{project.progress.percent}% complete</p>
+            </div>
+            <div className="rounded-2xl border border-border/60 bg-background/60 p-4">
+              <p className="text-xs text-muted-foreground">Chats</p>
+              <p className="mt-1 text-sm font-medium">{project.chat_count ?? 0}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
+          <div className="rounded-3xl border border-border/70 bg-card/80 p-6 shadow-sm backdrop-blur">
+            <h2 className="text-lg font-semibold">Project Progress</h2>
+            <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-muted/70">
+              <div
+                className="h-full rounded-full bg-foreground/80 transition-[width] duration-300"
+                style={{ width: `${Math.max(0, Math.min(100, project.progress.percent))}%` }}
+              />
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                <p className="text-xs text-muted-foreground">Completed Tasks</p>
+                <p className="mt-1 text-sm font-medium">
+                  {project.progress.completed} / {project.progress.total || 0}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                <p className="text-xs text-muted-foreground">In Progress</p>
+                <p className="mt-1 text-sm font-medium">{project.progress.in_progress}</p>
+              </div>
+              <div className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                <p className="text-xs text-muted-foreground">Blocked</p>
+                <p className="mt-1 text-sm font-medium">{project.progress.blocked}</p>
+              </div>
+              <div className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                <p className="text-xs text-muted-foreground">Linked Chats</p>
+                <p className="mt-1 text-sm font-medium">{project.linked_chat_ids?.length ?? 0}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-border/70 bg-card/80 p-6 shadow-sm backdrop-blur">
+            <h2 className="text-lg font-semibold">Live Docs</h2>
+            <div className="mt-4 space-y-2">
+              {docs.length ? docs.map(([key, path]) => (
+                <div
+                  key={key}
+                  className="rounded-2xl border border-border/60 bg-background/60 px-4 py-3"
+                >
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground/70">
+                    {key}
+                  </p>
+                  <p className="mt-1 truncate text-sm font-medium">{path}</p>
+                </div>
+              )) : (
+                <div className="rounded-2xl border border-dashed border-border/70 bg-background/40 px-4 py-6 text-sm text-muted-foreground">
+                  No project documents registered yet.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShellViewSkeleton({
+  title,
+  hostChromeInset = false,
+}: {
+  title: string;
+  hostChromeInset?: boolean;
+}) {
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
+      <div
+        className={cn(
+          "border-b border-border/60 px-6 py-4",
+          hostChromeInset ? "pt-16" : "pt-6",
+        )}
+      >
+        <div className="text-lg font-semibold tracking-tight text-foreground">{title}</div>
+        <div className="mt-2 h-4 w-40 animate-pulse rounded-full bg-muted/70" />
+      </div>
+      <div className="flex-1 space-y-4 overflow-auto px-6 py-6">
+        <div className="h-24 animate-pulse rounded-3xl border border-border/60 bg-card/60" />
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="h-48 animate-pulse rounded-3xl border border-border/60 bg-card/60" />
+          <div className="h-48 animate-pulse rounded-3xl border border-border/60 bg-card/60" />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -544,6 +746,9 @@ function Shell({
   const [activeKey, setActiveKey] = useState<string | null>(
     initialRouteRef.current.activeKey,
   );
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    initialRouteRef.current.projectId,
+  );
   const [view, setView] = useState<ShellView>(initialRouteRef.current.view);
   const [settingsInitialSection, setSettingsInitialSection] =
     useState<SettingsSectionKey>(initialRouteRef.current.settingsSection);
@@ -571,7 +776,8 @@ function Shell({
   const [runningChatIds, setRunningChatIds] = useState<Set<string>>(() => new Set());
   const [completedChatIds, setCompletedChatIds] = useState<Set<string>>(readCompletedRunChatIds);
   const [workspaces, setWorkspaces] = useState<WorkspacesPayload | null>(null);
-  const skills = useSkills(token);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const { skills, loading: skillsLoading, loadFailed: skillsLoadFailed } = useSkills(token);
   const [settingsSnapshot, setSettingsSnapshot] = useState<SettingsPayload | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [draftWorkspaceScope, setDraftWorkspaceScope] =
@@ -589,6 +795,7 @@ function Shell({
   const navigate = useCallback(
     (route: ShellRoute, options?: { replace?: boolean }) => {
       setActiveKey(route.activeKey);
+      setSelectedProjectId(route.projectId);
       setView(route.view);
       setSettingsInitialSection(route.settingsSection);
       writeShellRoute(route, options?.replace);
@@ -600,10 +807,11 @@ function Shell({
     const applyRoute = () => {
       const route = readShellRoute();
       setActiveKey(route.activeKey);
+      setSelectedProjectId(route.projectId);
       setView(route.view);
       setSettingsInitialSection(route.settingsSection);
       setWorkspaceError(null);
-      if (route.view === "chat" && !route.activeKey) {
+      if (route.view === "chat" && !route.activeKey && !route.projectId) {
         setDraftWorkspaceScope(null);
       }
     };
@@ -626,6 +834,29 @@ function Shell({
   }, [token]);
 
   useEffect(() => {
+    const warm = () => preloadShellViewModules();
+    if (typeof window === "undefined") {
+      warm();
+      return;
+    }
+    const browserWindow = window as Window & typeof globalThis & {
+      requestIdleCallback?: (
+        callback: IdleRequestCallback,
+        options?: IdleRequestOptions,
+      ) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof browserWindow.requestIdleCallback === "function") {
+      const handle = browserWindow.requestIdleCallback(warm, { timeout: 1_500 });
+      return () => {
+        browserWindow.cancelIdleCallback?.(handle);
+      };
+    }
+    const timer = globalThis.setTimeout(warm, 500);
+    return () => globalThis.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
     try {
       window.localStorage.setItem(
         SIDEBAR_STORAGE_KEY,
@@ -646,6 +877,18 @@ function Shell({
   }, [sessions, activeKey]);
   const runningChatIdList = useMemo(() => Array.from(runningChatIds), [runningChatIds]);
   const completedChatIdList = useMemo(() => Array.from(completedChatIds), [completedChatIds]);
+  const selectedProject = useMemo<ProjectSummary | null>(() => {
+    if (!selectedProjectId) return null;
+    return projects.find((project) => project.id === selectedProjectId) ?? null;
+  }, [projects, selectedProjectId]);
+  const selectedProjectScope = useMemo<WorkspaceScopePayload | null>(() => {
+    if (!selectedProject) return null;
+    return buildProjectScope(selectedProject, workspaces?.default_scope ?? null);
+  }, [selectedProject, workspaces?.default_scope]);
+  const draftProjectScope = useMemo<WorkspaceScopePayload | null>(
+    () => resolveProjectScope(draftWorkspaceScope, workspaces?.default_scope ?? null),
+    [draftWorkspaceScope, workspaces?.default_scope],
+  );
   const activeChatId = activeSession?.chatId ?? null;
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
@@ -664,13 +907,16 @@ function Shell({
     if (activeSession?.workspaceScope) {
       return activeSession.workspaceScope;
     }
-    return draftWorkspaceScope ?? workspaces?.default_scope ?? null;
+    if (selectedProjectScope) {
+      return selectedProjectScope;
+    }
+    return draftProjectScope;
   }, [
     activeChatId,
     activeSession?.workspaceScope,
-    draftWorkspaceScope,
+    selectedProjectScope,
+    draftProjectScope,
     workspaceOverrides,
-    workspaces?.default_scope,
   ]);
   const activeChatRunning = activeChatId ? runningChatIds.has(activeChatId) : false;
 
@@ -683,9 +929,22 @@ function Shell({
     }
   }, [token]);
 
+  const refreshProjects = useCallback(async () => {
+    try {
+      const payload = await fetchProjects(token);
+      setProjects(payload.projects);
+    } catch {
+      setProjects([]);
+    }
+  }, [token]);
+
   useEffect(() => {
     void refreshWorkspaces();
   }, [refreshWorkspaces]);
+
+  useEffect(() => {
+    void refreshProjects();
+  }, [refreshProjects]);
 
   useEffect(() => {
     if (loading) return;
@@ -707,18 +966,16 @@ function Shell({
     if (sessions.some((session) => session.key === activeKey)) return;
     const currentRoute = readShellRoute();
     navigate(
-      currentRoute.view === "chat"
-        ? defaultShellRoute()
-        : {
-            ...currentRoute,
-            activeKey: null,
-          },
+      {
+        ...currentRoute,
+        activeKey: null,
+      },
       { replace: true },
     );
   }, [activeKey, loading, navigate, sessions]);
 
   useEffect(() => {
-    return client.onSessionUpdate((_chatId, _scope, workspaceScope) => {
+    return client.onSessionUpdate((_chatId, _scope, workspaceScope, project) => {
       if (!workspaceScope) return;
       const next = normalizeWorkspaceScope(workspaceScope);
       setWorkspaceOverrides((current) => ({
@@ -727,14 +984,24 @@ function Shell({
       }));
       setDraftWorkspaceScope(next);
       setWorkspaceError(null);
+      if (_chatId === activeChatIdRef.current && project && typeof project.id === "string") {
+        setSelectedProjectId(project.id);
+        navigate({
+          view: "chat",
+          activeKey: `websocket:${_chatId}`,
+          projectId: project.id,
+          settingsSection: "overview",
+        }, { replace: true });
+      }
       void refreshWorkspaces();
+      void refreshProjects();
     });
-  }, [client, refreshWorkspaces]);
+  }, [client, navigate, refreshProjects, refreshWorkspaces]);
 
   useEffect(() => {
     return client.onError((error) => {
       if (error.kind !== "workspace_scope_rejected") return;
-      setWorkspaceError(t("errors.workspaceScopeRejected.body"));
+      setWorkspaceError(error.reason || t("errors.workspaceScopeRejected.body"));
       void refreshWorkspaces();
     });
   }, [client, refreshWorkspaces, t]);
@@ -873,10 +1140,19 @@ function Shell({
   const onCreateChat = useCallback(async (workspaceScope?: WorkspaceScopePayload | null) => {
     try {
       const scope = workspaceScope ?? activeWorkspaceScope;
+      if (!scope || sameWorkspacePath(scope.project_path, workspaces?.default_scope?.project_path)) {
+        setWorkspaceError(t("errors.projectRequired.body"));
+        return null;
+      }
       const chatId = await createChat(scope);
       navigate({
         view: "chat",
         activeKey: `websocket:${chatId}`,
+        projectId:
+          selectedProjectId
+          ?? selectedProject?.id
+          ?? activeSession?.project?.id
+          ?? null,
         settingsSection: "overview",
       });
       setMobileSidebarOpen(false);
@@ -890,11 +1166,21 @@ function Shell({
     } catch (e) {
       console.error("Failed to create chat", e);
       if (e instanceof Error && e.message.startsWith("workspace_scope_rejected:")) {
-        setWorkspaceError(t("errors.workspaceScopeRejected.body"));
+        const reason = e.message.slice("workspace_scope_rejected:".length).trim();
+        setWorkspaceError(reason || t("errors.workspaceScopeRejected.body"));
       }
       return null;
     }
-  }, [activeWorkspaceScope, createChat, navigate, t]);
+  }, [
+    activeSession?.project?.id,
+    activeWorkspaceScope,
+    createChat,
+    navigate,
+    selectedProject?.id,
+    selectedProjectId,
+    t,
+    workspaces?.default_scope?.project_path,
+  ]);
 
   const onForkChat = useCallback(async (
     sourceChatId: string,
@@ -913,6 +1199,7 @@ function Shell({
       navigate({
         view: "chat",
         activeKey: `websocket:${chatId}`,
+        projectId: sourceSession?.project?.id ?? null,
         settingsSection: "overview",
       });
       setMobileSidebarOpen(false);
@@ -924,12 +1211,24 @@ function Shell({
   }, [forkChat, navigate, sessions, sidebarState.title_overrides, t]);
 
   const onNewChat = useCallback(() => {
-    navigate(defaultShellRoute());
+    const projectId =
+      selectedProjectId
+      ?? selectedProject?.id
+      ?? activeSession?.project?.id
+      ?? null;
+    navigate(projectId
+      ? {
+          view: "chat",
+          activeKey: null,
+          projectId,
+          settingsSection: "overview",
+        }
+      : defaultShellRoute());
     setDraftWorkspaceScope(null);
     setWorkspaceError(null);
     setSessionSearchOpen(false);
     setMobileSidebarOpen(false);
-  }, [navigate]);
+  }, [activeSession?.project?.id, navigate, selectedProject?.id, selectedProjectId]);
 
   const onNewChatInProject = useCallback(
     (projectPath: string, projectName: string) => {
@@ -939,7 +1238,13 @@ function Shell({
         onNewChat();
         return;
       }
-      navigate(defaultShellRoute());
+      const matchingProject = projects.find((project) => project.root_path === trimmed);
+      navigate({
+        view: "chat",
+        activeKey: null,
+        projectId: matchingProject?.id ?? null,
+        settingsSection: "overview",
+      });
       setDraftWorkspaceScope(normalizeWorkspaceScope({
         project_path: trimmed,
         project_name: projectName || projectNameFromPath(trimmed),
@@ -949,8 +1254,19 @@ function Shell({
       setWorkspaceError(null);
       setMobileSidebarOpen(false);
     },
-    [activeWorkspaceScope, navigate, onNewChat, workspaces?.default_scope],
+    [activeWorkspaceScope, navigate, onNewChat, projects, workspaces?.default_scope],
   );
+
+  const onOpenProject = useCallback((projectId: string) => {
+    navigate({
+      view: "chat",
+      activeKey: null,
+      projectId,
+      settingsSection: "overview",
+    });
+    setWorkspaceError(null);
+    setMobileSidebarOpen(false);
+  }, [navigate]);
 
   const onSelectChat = useCallback(
     (key: string) => {
@@ -970,7 +1286,12 @@ function Shell({
         setDraftWorkspaceScope(null);
       }
       setWorkspaceError(null);
-      navigate({ view: "chat", activeKey: key, settingsSection: "overview" });
+      navigate({
+        view: "chat",
+        activeKey: key,
+        projectId: selected?.project?.id ?? null,
+        settingsSection: "overview",
+      });
       setMobileSidebarOpen(false);
     },
     [navigate, sessions],
@@ -1097,6 +1418,7 @@ function Shell({
         navigate({
           view: "chat",
           activeKey: next?.key ?? null,
+          projectId: next?.project?.id ?? null,
           settingsSection: "overview",
         });
       }
@@ -1151,9 +1473,9 @@ function Shell({
 
   const onOpenSettings = useCallback((section: SettingsSectionKey = "overview") => {
     setSessionSearchOpen(false);
-    navigate({ view: "settings", activeKey, settingsSection: section });
+    navigate({ view: "settings", activeKey, projectId: selectedProjectId, settingsSection: section });
     setMobileSidebarOpen(false);
-  }, [activeKey, navigate]);
+  }, [activeKey, navigate, selectedProjectId]);
 
   const onOpenModelSettings = useCallback(() => {
     onOpenSettings("models");
@@ -1161,25 +1483,32 @@ function Shell({
 
   const onOpenApps = useCallback(() => {
     setSessionSearchOpen(false);
-    navigate({ view: "apps", activeKey, settingsSection: "apps" });
+    navigate({ view: "apps", activeKey, projectId: selectedProjectId, settingsSection: "apps" });
     setMobileSidebarOpen(false);
-  }, [activeKey, navigate]);
+  }, [activeKey, navigate, selectedProjectId]);
 
   const onOpenSkills = useCallback(() => {
     setSessionSearchOpen(false);
-    navigate({ view: "skills", activeKey, settingsSection: "skills" });
+    navigate({ view: "skills", activeKey, projectId: selectedProjectId, settingsSection: "skills" });
     setMobileSidebarOpen(false);
-  }, [activeKey, navigate]);
+  }, [activeKey, navigate, selectedProjectId]);
+
+  const onOpenWorkflows = useCallback(() => {
+    setSessionSearchOpen(false);
+    navigate({ view: "workflows", activeKey, projectId: selectedProjectId, settingsSection: "overview" });
+    setMobileSidebarOpen(false);
+  }, [activeKey, navigate, selectedProjectId]);
 
   const onSettingsSectionChange = useCallback(
     (section: SettingsSectionKey) => {
       navigate({
         view: shellViewForSettingsSection(section),
         activeKey,
+        projectId: selectedProjectId,
         settingsSection: section,
       });
     },
-    [activeKey, navigate],
+    [activeKey, navigate, selectedProjectId],
   );
 
   const onBackToChat = useCallback(() => {
@@ -1192,9 +1521,10 @@ function Shell({
     navigate({
       view: "chat",
       activeKey: nextKey,
+      projectId: selectedProjectId,
       settingsSection: "overview",
     });
-  }, [activeKey, navigate, sessions]);
+  }, [activeKey, navigate, selectedProjectId, sessions]);
 
   const onRestart = useCallback(() => {
     const chatId = activeSession?.chatId ?? client.defaultChatId;
@@ -1303,13 +1633,14 @@ function Shell({
         navigate({
           view: "chat",
           activeKey: fallbackKey,
+          projectId: fallbackKey ? (sessions.find((s) => s.key === fallbackKey)?.project?.id ?? null) : selectedProjectId,
           settingsSection: "overview",
         }, { replace: true });
       }
     } catch (e) {
       console.error("Failed to delete session", e);
     }
-  }, [pendingDelete, deleteChat, activeKey, navigate, sessions]);
+  }, [pendingDelete, deleteChat, activeKey, navigate, selectedProjectId, sessions]);
 
   const onRequestDelete = useCallback(async (key: string, label: string) => {
     let automations: SessionAutomationJob[] = [];
@@ -1325,7 +1656,7 @@ function Shell({
     ? sidebarState.title_overrides[activeSession.key] ||
       activeSession.title ||
       deriveTitle(activeSession.preview, t("chat.newChat"))
-    : t("app.brand");
+    : selectedProject?.name ?? t("app.brand");
 
   useEffect(() => {
     if (view === "settings") {
@@ -1346,13 +1677,26 @@ function Shell({
       });
       return;
     }
+    if (view === "workflows") {
+      document.title = t("app.documentTitle.chat", {
+        title: t("workflowDashboard.title"),
+      });
+      return;
+    }
     document.title = activeSession
       ? t("app.documentTitle.chat", { title: headerTitle })
+      : selectedProject
+        ? t("app.documentTitle.chat", { title: selectedProject.name })
       : t("app.documentTitle.base");
-  }, [activeSession, headerTitle, i18n.resolvedLanguage, t, view]);
+  }, [activeSession, headerTitle, i18n.resolvedLanguage, selectedProject, t, view]);
+
+  const sidebarSessions = useMemo(() => {
+    if (view !== "chat" || !selectedProjectId) return sessions;
+    return sessions.filter((session) => session.project?.id === selectedProjectId);
+  }, [selectedProjectId, sessions, view]);
 
   const sidebarProps = {
-    sessions,
+    sessions: sidebarSessions,
     activeKey,
     loading,
     onNewChat,
@@ -1364,11 +1708,13 @@ function Shell({
     onToggleGroup,
     onRequestRenameProject,
     onNewChatInProject,
+    onOpenProject,
     onOpenSettings,
     onOpenApps,
     onOpenSkills,
+    onOpenWorkflows,
     onOpenSearch: onOpenSessionSearch,
-    activeUtility: view === "apps" || view === "skills" ? view : null,
+    activeUtility: view === "apps" || view === "skills" || view === "workflows" ? view : null,
     onToggleArchived,
     pinnedKeys: sidebarState.pinned_keys,
     archivedKeys: sidebarState.archived_keys,
@@ -1531,49 +1877,85 @@ function Shell({
                 view !== "chat" && "invisible pointer-events-none",
               )}
             >
-              <ThreadShell
-                session={activeSession}
-                title={headerTitle}
-                onToggleSidebar={toggleSidebar}
-                onNewChat={onNewChat}
-                onCreateChat={onCreateChat}
-                onForkChat={onForkChat}
-                onTurnEnd={onTurnEnd}
-                theme={theme}
-                onToggleTheme={toggle}
-                hideSidebarToggleForHostChrome
-                hostChromeTitleInset={hostSidebarCollapsed}
-                hideHeader={false}
-                workspaceScope={activeWorkspaceScope}
-                workspaceDefaultScope={workspaces?.default_scope ?? null}
-                workspaceControls={workspaces?.controls ?? null}
-                workspaceScopeDisabled={activeChatRunning}
-                workspaceError={workspaceError}
-                onWorkspaceScopeChange={applyWorkspaceScope}
-                settingsSnapshot={settingsSnapshot}
-                onOpenModelSettings={onOpenModelSettings}
-              />
+              {selectedProject && !activeSession ? (
+                <ProjectOverviewPanel
+                  project={selectedProject}
+                  onCreateChat={() => {
+                    void onCreateChat(selectedProjectScope);
+                  }}
+                />
+              ) : (
+                <ThreadShell
+                  session={activeSession}
+                  title={headerTitle}
+                  onToggleSidebar={toggleSidebar}
+                  onNewChat={onNewChat}
+                  onCreateChat={onCreateChat}
+                  onForkChat={onForkChat}
+                  onTurnEnd={onTurnEnd}
+                  theme={theme}
+                  onToggleTheme={toggle}
+                  hideSidebarToggleForHostChrome
+                  hostChromeTitleInset={hostSidebarCollapsed}
+                  hideHeader={false}
+                  project={activeSession?.project ?? selectedProject ?? null}
+                  workspaceScope={activeWorkspaceScope}
+                  workspaceDefaultScope={workspaces?.default_scope ?? null}
+                  workspaceControls={workspaces?.controls ?? null}
+                  workspaceScopeDisabled={activeChatRunning}
+                  workspaceError={workspaceError}
+                  onWorkspaceScopeChange={applyWorkspaceScope}
+                  settingsSnapshot={settingsSnapshot}
+                  onOpenModelSettings={onOpenModelSettings}
+                />
+              )}
             </div>
             {view !== "chat" && (
               <div className="absolute inset-0 flex flex-col">
-                <SettingsView
-                  theme={theme}
-                  initialSection={settingsInitialSection}
-                  initialSettings={settingsSnapshot}
-                  showSidebar={view === "settings"}
-                  onToggleTheme={toggle}
-                  onBackToChat={onBackToChat}
-                  onModelNameChange={onModelNameChange}
-                  onSettingsChange={setSettingsSnapshot}
-                  skills={skills}
-                  onWorkspaceSettingsChange={refreshWorkspaces}
-                  onSectionChange={onSettingsSectionChange}
-                  onLogout={onLogout}
-                  onRestart={onRestart}
-                  onNativeEngineRestart={onNativeEngineRestart}
-                  isRestarting={isRestarting}
-                  hostChromeInset={showHostChrome}
-                />
+                <Suspense
+                  fallback={
+                    <ShellViewSkeleton
+                      title={view === "workflows" ? t("workflowDashboard.title") : t("settings.sidebar.title")}
+                      hostChromeInset={showHostChrome}
+                    />
+                  }
+                >
+                  {view === "workflows" ? (
+                    <WorkflowDashboardView
+                      client={client}
+                      token={token}
+                      sessionKey={activeSession?.key ?? activeKey}
+                      sessionTitle={activeSession ? headerTitle : null}
+                      theme={theme}
+                      onToggleTheme={toggle}
+                      onToggleSidebar={toggleSidebar}
+                      onBackToChat={onBackToChat}
+                      hideSidebarToggleForHostChrome
+                      hostChromeTitleInset={hostSidebarCollapsed}
+                    />
+                  ) : (
+                    <SettingsView
+                      theme={theme}
+                      initialSection={settingsInitialSection}
+                      initialSettings={settingsSnapshot}
+                      showSidebar={view === "settings"}
+                      onToggleTheme={toggle}
+                      onBackToChat={onBackToChat}
+                      onModelNameChange={onModelNameChange}
+                      onSettingsChange={setSettingsSnapshot}
+                      skills={skills}
+                      skillsLoading={skillsLoading}
+                      skillsLoadFailed={skillsLoadFailed}
+                      onWorkspaceSettingsChange={refreshWorkspaces}
+                      onSectionChange={onSettingsSectionChange}
+                      onLogout={onLogout}
+                      onRestart={onRestart}
+                      onNativeEngineRestart={onNativeEngineRestart}
+                      isRestarting={isRestarting}
+                      hostChromeInset={showHostChrome}
+                    />
+                  )}
+                </Suspense>
               </div>
             )}
           </main>

@@ -657,7 +657,7 @@ class WebSocketChannel(BaseChannel):
             )
             if scope is None:
                 return
-            self._workspaces.persist_scope(new_id, scope)
+            project = self._workspaces.persist_scope(new_id, scope)
             self._attach(connection, new_id)
             await self._send_event(connection, "attached", chat_id=new_id)
             await self._send_event(
@@ -666,6 +666,7 @@ class WebSocketChannel(BaseChannel):
                 chat_id=new_id,
                 scope="metadata",
                 workspace_scope=scope.payload(),
+                project=project,
             )
             await self._hydrate_after_subscribe(new_id)
             return
@@ -698,18 +699,83 @@ class WebSocketChannel(BaseChannel):
             )
             if scope is None:
                 return
-            self._workspaces.persist_scope(cid, scope)
+            project = self._workspaces.persist_scope(cid, scope)
             await self._send_event(
                 connection,
                 "session_updated",
                 chat_id=cid,
                 scope="metadata",
                 workspace_scope=scope.payload(),
+                project=project,
             )
             return
         if t == "transcribe_audio":
             event, payload = await webui_transcription_event(envelope)
             await self._send_event(connection, event, **payload)
+            return
+        if t == "save_file":
+            cid = envelope.get("chat_id")
+            request_id = envelope.get("request_id")
+            raw_path = envelope.get("path")
+            content = envelope.get("content")
+            base_revision = envelope.get("base_revision")
+            if not _is_valid_chat_id(cid):
+                await self._send_event(
+                    connection,
+                    "file_save_failed",
+                    request_id=request_id,
+                    detail="invalid chat_id",
+                )
+                return
+            if not isinstance(request_id, str) or not request_id.strip():
+                await self._send_event(connection, "file_save_failed", detail="missing request_id")
+                return
+            if not isinstance(raw_path, str) or not isinstance(content, str):
+                await self._send_event(
+                    connection,
+                    "file_save_failed",
+                    request_id=request_id,
+                    chat_id=cid,
+                    detail="missing file payload",
+                )
+                return
+            if not self._workspace_controls_available(connection):
+                await self._send_event(
+                    connection,
+                    "file_save_failed",
+                    request_id=request_id,
+                    chat_id=cid,
+                    detail="workspace controls unavailable",
+                )
+                return
+            from teai_builder.webui.file_preview import (
+                WebUIFilePreviewError,
+                save_file_preview,
+            )
+
+            try:
+                payload = save_file_preview(
+                    raw_path,
+                    content=content,
+                    base_revision=base_revision if isinstance(base_revision, str) else None,
+                    scope=self._workspaces.scope_for_session_key(f"websocket:{cid}"),
+                )
+            except WebUIFilePreviewError as e:
+                await self._send_event(
+                    connection,
+                    "file_save_failed",
+                    request_id=request_id,
+                    chat_id=cid,
+                    detail=e.message,
+                )
+                return
+            await self._send_event(
+                connection,
+                "file_saved",
+                request_id=request_id,
+                chat_id=cid,
+                payload=payload,
+            )
             return
         if t == "message":
             cid = envelope.get("chat_id")

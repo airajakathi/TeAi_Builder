@@ -239,6 +239,33 @@ def test_update_agent_settings_accepts_context_window_options(
     assert saved.agents.defaults.context_window_tokens == 262144
 
 
+def test_settings_payload_includes_reliability_status(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config.model_validate(
+        {
+            "reliability": {
+                "telemetry": {
+                    "enabled": True,
+                    "localAuditLog": True,
+                }
+            }
+        }
+    )
+    save_config(config, config_path)
+    monkeypatch.setattr("teai_builder.config.loader._current_config_path", config_path)
+
+    payload = settings_payload()
+
+    assert payload["runtime"]["reliability"]["telemetry"]["enabled"] is True
+    assert payload["advanced"]["telemetry_enabled"] is True
+    assert payload["advanced"]["crash_reports_enabled"] is True
+    assert payload["advanced"]["exec_strict_sandbox"] is True
+    assert payload["runtime"]["reliability"]["logs"]["path"].endswith("logs/gateway.log")
+
+
 def test_update_model_configuration_accepts_context_window_options(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

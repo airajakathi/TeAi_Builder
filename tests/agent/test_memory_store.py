@@ -44,6 +44,18 @@ class TestMemoryStoreBasicIO:
         assert "Long-term Memory" in ctx
         assert "important fact" in ctx
 
+    def test_for_workspace_returns_project_scoped_store(self, store, tmp_path):
+        project = tmp_path / "projects" / "alpha"
+        project_store = store.for_workspace(project)
+
+        project_store.write_memory("alpha fact")
+        project_store.append_history("alpha event", session_key="websocket:alpha")
+
+        assert store.read_memory() == ""
+        assert [e["content"] for e in store.read_unprocessed_history(0)] == []
+        assert project_store.read_memory() == "alpha fact"
+        assert [e["content"] for e in project_store.read_unprocessed_history(0)] == ["alpha event"]
+
 
 class TestHistoryWithCursor:
     def test_append_history_returns_cursor(self, store):

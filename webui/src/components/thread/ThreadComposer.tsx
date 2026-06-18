@@ -82,6 +82,7 @@ import {
   logoFallbackUrls,
   providerBrand,
 } from "@/lib/provider-brand";
+import { isProjectScopedWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
 
 /** ``<input accept>``: aligned with the server's MIME whitelist. SVG is
@@ -173,6 +174,7 @@ interface ThreadComposerProps {
   onWorkspaceScopeChange?: (scope: WorkspaceScopePayload) => void;
   pendingQueueKey?: string | null;
   authToken?: string;
+  prefillRequest?: { id: string; text: string } | null;
 }
 
 const COMMAND_ICONS: Record<string, LucideIcon> = {
@@ -767,6 +769,7 @@ export function ThreadComposer({
   onWorkspaceScopeChange,
   pendingQueueKey = null,
   authToken,
+  prefillRequest = null,
 }: ThreadComposerProps) {
   const { t } = useTranslation();
   const [value, setValue] = useState("");
@@ -785,6 +788,7 @@ export function ThreadComposer({
   const queuedPromptCounterRef = useRef(0);
   const draggedQueuedPromptIdRef = useRef<string | null>(null);
   const previousPendingQueueKeyRef = useRef(pendingQueueKey);
+  const previousPrefillIdRef = useRef<string | null>(null);
   const wasStreamingRef = useRef(isStreaming);
   const skipNextQueuedFlushRef = useRef(false);
   const skipQueuedPromptPersistRef = useRef(false);
@@ -796,10 +800,13 @@ export function ThreadComposer({
     [pendingQueueKey],
   );
   const showProjectPicker =
-    isHero
-    && !!workspaceDefaultScope
+    !!workspaceDefaultScope
     && !!onWorkspaceScopeChange
     && workspaceControls?.can_change_project !== false;
+  const projectScopeRequired =
+    showProjectPicker
+    && !isProjectScopedWorkspace(workspaceScope, workspaceDefaultScope);
+  const showProjectPickerControl = isHero || projectScopeRequired;
 
   useEffect(() => {
     skipQueuedPromptPersistRef.current = true;
@@ -874,6 +881,7 @@ export function ThreadComposer({
     && !modelNeedsSetup
     && !encoding
     && !hasErrors
+    && !projectScopeRequired
     && hasComposerContent;
   const canOpenModelSettings = Boolean(modelNeedsSetup && onModelBadgeClick && !disabled);
   const canQueueGuidance =
@@ -882,8 +890,11 @@ export function ThreadComposer({
     && !modelNeedsSetup
     && !encoding
     && !hasErrors
+    && !projectScopeRequired
     && hasComposerContent
     && !value.trimStart().startsWith("/");
+  const workspaceBannerError = workspaceError
+    ?? (projectScopeRequired ? t("errors.projectRequired.body") : null);
 
   const slashQuery = useMemo(() => {
     if (disabled || slashMenuDismissed || !value.startsWith("/")) return null;
@@ -1130,6 +1141,23 @@ export function ThreadComposer({
       el.focus();
     });
   }, []);
+
+  useEffect(() => {
+    if (!prefillRequest || previousPrefillIdRef.current === prefillRequest.id) return;
+    previousPrefillIdRef.current = prefillRequest.id;
+    setValue(prefillRequest.text);
+    setInlineError(null);
+    setSlashMenuDismissed(false);
+    setCliAppMenuDismissed(false);
+    setCursorPosition(prefillRequest.text.length);
+    resizeTextarea();
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(prefillRequest.text.length, prefillRequest.text.length);
+    });
+  }, [prefillRequest, resizeTextarea]);
 
   // Runs before paint so switching sessions never flashes stale draft text.
   useLayoutEffect(() => {
@@ -1699,10 +1727,21 @@ export function ThreadComposer({
             {inlineError}
           </div>
         ) : null}
+        {!inlineError && workspaceBannerError ? (
+          <div
+            role="alert"
+            className={cn(
+              "mx-3 mb-1 rounded-md border border-destructive/40 bg-destructive/8 px-2.5 py-1",
+              "text-[11.5px] font-medium text-destructive",
+            )}
+          >
+            {workspaceBannerError}
+          </div>
+        ) : null}
         <div
           className={cn(
             "flex items-center justify-between",
-            isHero ? cn("gap-1.5 px-4", showProjectPicker ? "pb-1.5" : "pb-3.5") : "gap-2 px-3 pb-2",
+            isHero ? cn("gap-1.5 px-4", showProjectPickerControl ? "pb-1.5" : "pb-3.5") : "gap-2 px-3 pb-2",
           )}
         >
           <div className={cn("flex min-w-0 flex-1 items-center", isHero ? "gap-1.5" : "gap-2")}>
@@ -1770,6 +1809,7 @@ export function ThreadComposer({
                       disabled={voiceRecorder.buttonDisabled}
                       aria-label={voiceButtonLabel}
                       aria-keyshortcuts={VOICE_SHORTCUT_ARIA}
+                      title={voiceButtonTooltip}
                       onPointerDown={voiceRecorder.beginPress}
                       onPointerUp={voiceRecorder.endPress}
                       onPointerCancel={voiceRecorder.endPress}
@@ -1840,6 +1880,7 @@ export function ThreadComposer({
         </div>
         <WorkspaceProjectPicker
           isHero={isHero}
+          visible={showProjectPickerControl}
           disabled={disabled || workspaceScopeDisabled}
           scope={workspaceScope}
           defaultScope={workspaceDefaultScope}

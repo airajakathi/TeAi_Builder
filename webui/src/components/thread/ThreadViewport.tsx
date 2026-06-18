@@ -11,6 +11,7 @@ import {
 } from "react";
 import { ArrowDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import type { CliRunSummary } from "@/components/thread/AgentActivityCluster";
 
 import { PromptRail } from "@/components/thread/PromptRail";
 import { ThreadMessages } from "@/components/thread/ThreadMessages";
@@ -44,6 +45,7 @@ interface ThreadViewportProps {
   onLoadOlder?: () => Promise<void> | void;
   onOpenFilePreview?: (path: string) => void;
   onForkFromMessage?: (beforeUserIndex: number) => void;
+  onReuseCliRun?: (run: CliRunSummary) => void;
 }
 
 const NEAR_BOTTOM_PX = 48;
@@ -83,6 +85,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   onLoadOlder,
   onOpenFilePreview,
   onForkFromMessage,
+  onReuseCliRun,
 }, ref) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -346,6 +349,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
                   forkBoundaryMessageCount={visibleForkBoundaryMessageCount}
                   onOpenFilePreview={onOpenFilePreview}
                   onForkFromMessage={onForkFromMessage}
+                  onReuseCliRun={onReuseCliRun}
                 />
               </div>
             </div>

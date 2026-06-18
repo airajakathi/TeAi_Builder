@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ThreadComposer } from "@/components/thread/ThreadComposer";
+import { bootstrapProject, fetchProjects } from "@/lib/api";
 import type { CliAppInfo, McpPresetInfo, SlashCommand } from "@/lib/types";
 
 vi.mock("@/lib/imageEncode", () => ({
@@ -12,6 +13,15 @@ vi.mock("@/lib/imageEncode", () => ({
     normalized: false,
   })),
 }));
+
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return {
+    ...actual,
+    bootstrapProject: vi.fn(),
+    fetchProjects: vi.fn(),
+  };
+});
 
 const COMMANDS: SlashCommand[] = [
   {
@@ -120,6 +130,34 @@ const MCP_PRESETS: McpPresetInfo[] = [
     connection_summary: "",
   },
 ];
+
+const TRACKED_PROJECTS_PAYLOAD = {
+  schema_version: 1,
+  projects: [
+    {
+      id: "proj_workspace",
+      name: "Workspace App",
+      slug: "workspace-app",
+      root_path: "/Users/test/.teai_builder/workspace/workspace-app",
+      created_at: "2026-06-17T00:00:00Z",
+      updated_at: "2026-06-17T00:00:00Z",
+      status: "active",
+      progress: { total: 1, completed: 0, in_progress: 1, blocked: 0, percent: 0 },
+      docs: {},
+    },
+    {
+      id: "proj_external",
+      name: "External App",
+      slug: "external-app",
+      root_path: "/Users/test/outside/external-app",
+      created_at: "2026-06-17T00:00:00Z",
+      updated_at: "2026-06-17T00:00:00Z",
+      status: "active",
+      progress: { total: 1, completed: 0, in_progress: 1, blocked: 0, percent: 0 },
+      docs: {},
+    },
+  ],
+};
 const ORIGINAL_INNER_HEIGHT = window.innerHeight;
 const ORIGINAL_MEDIA_DEVICES = navigator.mediaDevices;
 
@@ -558,6 +596,7 @@ describe("ThreadComposer", () => {
 
   it("keeps project selection as a compact composer dropdown", async () => {
     const onWorkspaceScopeChange = vi.fn();
+    vi.mocked(fetchProjects).mockResolvedValue(TRACKED_PROJECTS_PAYLOAD);
     const defaultScope = {
       project_path: "/Users/test/.teai_builder/workspace",
       project_name: "workspace",
@@ -582,44 +621,172 @@ describe("ThreadComposer", () => {
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "Choose project" }));
 
-    expect(await screen.findByRole("menuitem", { name: /Default workspace/ })).toBeInTheDocument();
+    expect(await screen.findByText("Workspace App")).toBeInTheDocument();
+    expect(screen.queryByText("External App")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Create project" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Paste path" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Use Path" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /Choose folder/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
-    const input = screen.getByLabelText("Paste path");
-    fireEvent.change(input, { target: { value: "relative/project" } });
-    fireEvent.click(screen.getByRole("button", { name: "Use Path" }));
-
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Enter an absolute folder path on this machine.",
-    );
-    expect(onWorkspaceScopeChange).not.toHaveBeenCalled();
-
-    fireEvent.change(input, { target: { value: "/Users/test/project-alpha" } });
-    fireEvent.click(screen.getByRole("button", { name: "Use Path" }));
+    fireEvent.click(screen.getByText("Workspace App"));
 
     expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({
-      project_path: "/Users/test/project-alpha",
-      project_name: "project-alpha",
-      access_mode: "full",
-      restrict_to_workspace: false,
-    }));
-
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Choose project" }));
-    const reopenedInput = await screen.findByLabelText("Paste path");
-    fireEvent.change(reopenedInput, { target: { value: "~/Pictures/Photos" } });
-    fireEvent.click(screen.getByRole("button", { name: "Use Path" }));
-
-    expect(onWorkspaceScopeChange).toHaveBeenLastCalledWith(expect.objectContaining({
-      project_path: "~/Pictures/Photos",
-      project_name: "Photos",
+      project_path: "/Users/test/.teai_builder/workspace/workspace-app",
+      project_name: "Workspace App",
       access_mode: "full",
       restrict_to_workspace: false,
     }));
   });
 
+  it("requires a real project before the hero composer can send", () => {
+    const onSend = vi.fn();
+    const defaultScope = {
+      project_path: "/Users/test/.teai_builder/workspace",
+      project_name: "workspace",
+      access_mode: "restricted" as const,
+      restrict_to_workspace: true,
+    };
+    render(
+      <ThreadComposer
+        onSend={onSend}
+        placeholder="Ask anything..."
+        variant="hero"
+        workspaceScope={defaultScope}
+        workspaceDefaultScope={defaultScope}
+        workspaceControls={{ can_change_project: true, can_use_full_access: true }}
+        onWorkspaceScopeChange={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Build the app" },
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Choose or create a project before starting a new chat.",
+    );
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("blocks legacy root-scoped thread chats until a project is chosen", async () => {
+    const onSend = vi.fn();
+    const onWorkspaceScopeChange = vi.fn();
+    vi.mocked(fetchProjects).mockResolvedValue(TRACKED_PROJECTS_PAYLOAD);
+    const defaultScope = {
+      project_path: "/Users/test/.teai_builder/workspace",
+      project_name: "workspace",
+      access_mode: "restricted" as const,
+      restrict_to_workspace: true,
+    };
+    render(
+      <ThreadComposer
+        onSend={onSend}
+        placeholder="Reply..."
+        variant="thread"
+        workspaceScope={defaultScope}
+        workspaceDefaultScope={defaultScope}
+        workspaceControls={{ can_change_project: true, can_use_full_access: true }}
+        onWorkspaceScopeChange={onWorkspaceScopeChange}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "continue old chat" },
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Choose or create a project before starting a new chat.",
+    );
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Choose project" }));
+    expect(await screen.findByText("Workspace App")).toBeInTheDocument();
+    expect(screen.queryByText("External App")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Workspace App"));
+
+    expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({
+      project_path: "/Users/test/.teai_builder/workspace/workspace-app",
+      project_name: "Workspace App",
+      access_mode: "restricted",
+      restrict_to_workspace: true,
+    }));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("creates a workspace project from the hero picker before the first chat exists", async () => {
+    const onWorkspaceScopeChange = vi.fn();
+    vi.mocked(fetchProjects).mockResolvedValue({ schema_version: 1, projects: [] });
+    vi.mocked(bootstrapProject).mockResolvedValue({
+      created: true,
+      project: {
+        id: "proj_alpha",
+        name: "Alpha App",
+        slug: "alpha-app",
+        root_path: "/Users/test/.teai_builder/workspace/alpha-app",
+        created_at: "2026-06-17T10:00:00Z",
+        updated_at: "2026-06-17T10:00:00Z",
+        status: "active",
+        progress: {
+          total: 3,
+          completed: 0,
+          in_progress: 1,
+          blocked: 0,
+          percent: 0,
+        },
+        docs: {},
+      },
+      workspace_scope: {
+        project_path: "/Users/test/.teai_builder/workspace/alpha-app",
+        project_name: "Alpha App",
+        access_mode: "restricted",
+        restrict_to_workspace: true,
+      },
+    });
+    const defaultScope = {
+      project_path: "/Users/test/.teai_builder/workspace",
+      project_name: "workspace",
+      access_mode: "restricted" as const,
+      restrict_to_workspace: true,
+    };
+    render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        placeholder="Ask anything..."
+        variant="hero"
+        workspaceScope={defaultScope}
+        workspaceDefaultScope={defaultScope}
+        workspaceControls={{ can_change_project: true, can_use_full_access: true }}
+        onWorkspaceScopeChange={onWorkspaceScopeChange}
+        authToken="tok"
+      />,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Choose project" }));
+    fireEvent.change(await screen.findByLabelText("Create project"), {
+      target: { value: "Alpha App" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(onWorkspaceScopeChange).toHaveBeenCalledWith({
+      project_path: "/Users/test/.teai_builder/workspace/alpha-app",
+      project_name: "Alpha App",
+      access_mode: "restricted",
+      restrict_to_workspace: true,
+    }));
+    expect(bootstrapProject).toHaveBeenCalledWith(
+      "tok",
+      "Alpha App",
+      "restricted",
+    );
+  });
+
   it("uses the native folder picker for project selection on native host", async () => {
     const onWorkspaceScopeChange = vi.fn();
     const pickFolder = vi.fn().mockResolvedValue("/Users/test/native-project");
+    vi.mocked(fetchProjects).mockResolvedValue({ schema_version: 1, projects: [] });
     const defaultScope = {
       project_path: "/Users/test/.teai_builder/workspace",
       project_name: "workspace",
@@ -649,10 +816,10 @@ describe("ThreadComposer", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Choose project" }));
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Choose project" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Choose folder/i }));
 
     await waitFor(() => expect(pickFolder).toHaveBeenCalled());
-    expect(screen.queryByRole("menuitem", { name: /Default workspace/ })).not.toBeInTheDocument();
     expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({
       project_path: "/Users/test/native-project",
       project_name: "native-project",
@@ -661,7 +828,8 @@ describe("ThreadComposer", () => {
     }));
   });
 
-  it("uses the web path menu when no native host picker is available", async () => {
+  it("shows tracked workspace projects and create flow in the web picker without legacy path controls", async () => {
+    vi.mocked(fetchProjects).mockResolvedValue(TRACKED_PROJECTS_PAYLOAD);
     const defaultScope = {
       project_path: "/Users/test/.teai_builder/workspace",
       project_name: "workspace",
@@ -683,8 +851,12 @@ describe("ThreadComposer", () => {
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "Choose project" }));
 
-    expect(await screen.findByRole("menuitem", { name: /Default workspace/ })).toBeInTheDocument();
-    expect(screen.getByLabelText("Paste path")).toBeInTheDocument();
+    expect(await screen.findByText("Workspace App")).toBeInTheDocument();
+    expect(screen.queryByText("External App")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Create project" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /Choose folder/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Paste path" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Use Path" })).not.toBeInTheDocument();
   });
 
   it("shows turn run timer when runStartedAt is set", () => {

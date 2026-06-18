@@ -50,6 +50,7 @@ from teai_builder.webui.transcript import append_transcript_object, read_transcr
 # -- Shared helpers (aligned with test_websocket_integration.py) ---------------
 
 _PORT = 29876
+_PROJECT_SCOPE_PATH = str((Path.cwd() / "teai_builder").resolve())
 
 
 def _ch(bus: Any, **kw: Any) -> WebSocketChannel:
@@ -315,6 +316,75 @@ async def test_webui_message_envelope_marks_inbound_metadata(bus: MagicMock) -> 
 
 
 @pytest.mark.asyncio
+async def test_save_file_envelope_updates_workspace_file(bus: MagicMock, tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    source = workspace / "src" / "app.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text("export const value = 1;\n", encoding="utf-8")
+
+    channel = _ch(bus)
+    channel._workspaces._default_workspace = workspace
+    conn = AsyncMock()
+    conn.remote_address = ("127.0.0.1", 50123)
+
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {
+            "type": "save_file",
+            "request_id": "save-1",
+            "chat_id": "chat-1",
+            "path": str(source),
+            "content": "export const value = 2;\n",
+        },
+    )
+
+    assert source.read_text(encoding="utf-8") == "export const value = 2;\n"
+    sent = json.loads(conn.send.await_args.args[0])
+    assert sent["event"] == "file_saved"
+    assert sent["request_id"] == "save-1"
+    assert sent["payload"]["content"] == "export const value = 2;\n"
+
+
+@pytest.mark.asyncio
+async def test_save_file_envelope_rejects_stale_revision(bus: MagicMock, tmp_path) -> None:
+    from teai_builder.webui.file_preview import file_preview_payload
+    from teai_builder.security.workspace_access import WorkspaceScope
+
+    workspace = tmp_path / "workspace"
+    source = workspace / "src" / "app.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text("export const value = 1;\n", encoding="utf-8")
+    scope = WorkspaceScope(project_path=workspace, allowed_root=workspace, restrict_to_project=False)
+    base_revision = file_preview_payload(str(source), scope=scope)["revision"]
+    source.write_text("export const value = 9;\n", encoding="utf-8")
+
+    channel = _ch(bus)
+    channel._workspaces._default_workspace = workspace
+    conn = AsyncMock()
+    conn.remote_address = ("127.0.0.1", 50123)
+
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {
+            "type": "save_file",
+            "request_id": "save-2",
+            "chat_id": "chat-1",
+            "path": str(source),
+            "content": "export const value = 2;\n",
+            "base_revision": base_revision,
+        },
+    )
+
+    assert source.read_text(encoding="utf-8") == "export const value = 9;\n"
+    sent = json.loads(conn.send.await_args.args[0])
+    assert sent["event"] == "file_save_failed"
+    assert sent["request_id"] == "save-2"
+    assert sent["detail"] == "file changed on disk"
+
+
+@pytest.mark.asyncio
 async def test_webui_message_envelope_persists_user_transcript_for_refresh(
     bus: MagicMock,
     tmp_path,
@@ -532,6 +602,32 @@ async def test_webui_scope_rejects_missing_project_path(bus: MagicMock, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_webui_new_chat_requires_project_scope(bus: MagicMock, tmp_path) -> None:
+    default_workspace = tmp_path / "default"
+    default_workspace.mkdir()
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"], "host": "127.0.0.1"},
+        bus,
+        gateway=_basic_handler(bus, session_manager=SessionManager(tmp_path / "sessions"), workspace_path=default_workspace),
+    )
+    conn = AsyncMock()
+    conn.remote_address = ("127.0.0.1", 50123)
+
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {"type": "new_chat"},
+    )
+
+    conn.send.assert_awaited()
+    payload = json.loads(conn.send.await_args.args[0])
+    assert payload["event"] == "error"
+    assert payload["detail"] == "workspace_scope_rejected"
+    assert payload["reason"] == "Select or create a project before starting a new chat."
+    bus.publish_inbound.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_webui_scope_rejects_running_scope_change(bus: MagicMock, tmp_path) -> None:
     default_workspace = tmp_path / "default"
     project = tmp_path / "project"
@@ -726,6 +822,9 @@ async def test_native_webui_scope_allows_custom_scope_without_loopback(
     assert payload["workspace_scope"]["project_path"] == str(project.resolve())
     assert payload["workspace_scope"]["project_name"] == "project"
     assert payload["workspace_scope"]["access_mode"] == "full"
+    assert payload["project"]["name"] == "project"
+    assert payload["project"]["root_path"] == str(project.resolve())
+    assert payload["project"]["progress"]["total"] >= 1
     assert payload["workspace_scope"]["restrict_to_workspace"] is False
     assert payload["workspace_scope"]["sandbox_status"]["restrict_to_workspace"] is False
     assert payload["workspace_scope"]["sandbox_status"]["workspace_root"] == str(project.resolve())
@@ -734,6 +833,8 @@ async def test_native_webui_scope_allows_custom_scope_without_loopback(
         "project_path": str(project.resolve()),
         "access_mode": "full",
     }
+    assert saved["metadata"]["project"]["name"] == "project"
+    assert saved["metadata"]["project"]["root_path"] == str(project.resolve())
 
 
 @pytest.mark.asyncio
@@ -2380,7 +2481,13 @@ async def test_multiplex_new_chat_roundtrip(bus: MagicMock) -> None:
             ready = json.loads(await client.recv())
             default_chat = ready["chat_id"]
 
-            await client.send(json.dumps({"type": "new_chat"}))
+            await client.send(json.dumps({
+                "type": "new_chat",
+                "workspace_scope": {
+                    "project_path": _PROJECT_SCOPE_PATH,
+                    "access_mode": "restricted",
+                },
+            }))
             attached = json.loads(await client.recv())
             assert attached["event"] == "attached"
             new_chat = attached["chat_id"]
@@ -2514,9 +2621,21 @@ async def test_multiplex_two_chats_isolated(bus: MagicMock) -> None:
         async with websockets.connect(f"ws://127.0.0.1:{port}/ws?client_id=two") as client:
             await client.recv()  # ready
 
-            await client.send(json.dumps({"type": "new_chat"}))
+            await client.send(json.dumps({
+                "type": "new_chat",
+                "workspace_scope": {
+                    "project_path": _PROJECT_SCOPE_PATH,
+                    "access_mode": "restricted",
+                },
+            }))
             chat_a = (await _recv_ws_event(client, "attached"))["chat_id"]
-            await client.send(json.dumps({"type": "new_chat"}))
+            await client.send(json.dumps({
+                "type": "new_chat",
+                "workspace_scope": {
+                    "project_path": _PROJECT_SCOPE_PATH,
+                    "access_mode": "restricted",
+                },
+            }))
             chat_b = (await _recv_ws_event(client, "attached"))["chat_id"]
             assert chat_a != chat_b
 
@@ -2587,7 +2706,13 @@ async def test_multiplex_cleanup_on_disconnect(bus: MagicMock) -> None:
         async with websockets.connect(f"ws://127.0.0.1:{port}/ws?client_id=dc") as client:
             ready = json.loads(await client.recv())
             default_chat = ready["chat_id"]
-            await client.send(json.dumps({"type": "new_chat"}))
+            await client.send(json.dumps({
+                "type": "new_chat",
+                "workspace_scope": {
+                    "project_path": _PROJECT_SCOPE_PATH,
+                    "access_mode": "restricted",
+                },
+            }))
             extra_chat = json.loads(await client.recv())["chat_id"]
             assert default_chat in channel._subs
             assert extra_chat in channel._subs
@@ -2787,7 +2912,279 @@ def test_handle_file_preview_returns_workspace_file(tmp_path) -> None:
     assert body["display_path"] == "teai_builder/agent/hook.py"
     assert body["language"] == "python"
     assert body["content"].splitlines() == ["print('hello')"]
+    assert isinstance(body["revision"], str)
+    assert body["revision"]
     assert body["truncated"] is False
+
+
+def test_handle_workspace_tree_returns_workspace_listing(tmp_path) -> None:
+    from urllib.parse import quote
+
+    from websockets.datastructures import Headers
+    from websockets.http11 import Request
+
+    workspace = tmp_path / "workspace"
+    (workspace / "src").mkdir(parents=True)
+    (workspace / "src" / "app.ts").write_text("export const ok = true;\n", encoding="utf-8")
+    (workspace / "README.md").write_text("# demo\n", encoding="utf-8")
+
+    gateway = _basic_handler(MagicMock(), workspace_path=workspace)
+    gateway.tokens.api_tokens["tok"] = time.monotonic() + 300.0
+    key = "websocket:file-preview"
+    enc = quote(key, safe="")
+    req = Request(
+        f"/api/sessions/{enc}/workspace-tree",
+        Headers([("Authorization", "Bearer tok")]),
+    )
+
+    resp = gateway.http._handle_workspace_tree(req, enc)
+
+    assert resp.status_code == 200
+    body = json.loads(resp.body.decode())
+    assert body["root"]["kind"] == "directory"
+    assert body["root"]["path"] == str(workspace)
+    assert [child["name"] for child in body["root"]["children"]] == ["src", "README.md"]
+    assert body["root"]["children"][0]["children"][0]["display_path"] == "src/app.ts"
+    assert body["truncated"] is False
+
+
+def test_handle_webui_tools_returns_enabled_tool_catalog(tmp_path) -> None:
+    from urllib.parse import quote
+
+    from websockets.datastructures import Headers
+    from websockets.http11 import Request
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    gateway = _basic_handler(MagicMock(), workspace_path=workspace)
+    gateway.http.tokens.api_tokens["tok"] = time.monotonic() + 300.0
+    key = "websocket:tools"
+    enc = quote(key, safe="")
+    req = Request(
+        "/api/webui/tools",
+        Headers([("Authorization", "Bearer tok")]),
+    )
+
+    resp = gateway.http._handle_webui_tools(req)
+
+    assert resp.status_code == 200
+    body = json.loads(resp.body.decode())
+    names = {item["name"] for item in body["tools"]}
+    assert "read_file" in names
+    exec_entry = next(item for item in body["tools"] if item["name"] == "exec")
+    assert exec_entry["read_only"] is False
+    assert isinstance(exec_entry["parameters"], dict)
+
+
+def test_handle_session_workflow_runs_returns_session_filtered_runs(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace
+    from urllib.parse import quote
+
+    from websockets.datastructures import Headers
+    from websockets.http11 import Request
+
+    from teai_builder.agent.goal_validator import Goal
+    from teai_builder.agent.workflow_engine import (
+        WorkflowDefinition,
+        WorkflowEngine,
+        WorkflowStep,
+    )
+
+    monkeypatch.setattr("teai_builder.config.paths.get_data_dir", lambda: tmp_path)
+    engine = WorkflowEngine(parallel_executor=SimpleNamespace())
+    workflow = WorkflowDefinition(
+        workflow_id="ui_dashboard",
+        name="UI Dashboard",
+        description="dashboard test",
+        steps=[WorkflowStep(step_id="plan", name="Plan", prompt_template="plan")],
+    )
+    goal = Goal(
+        goal_id="goal-ui",
+        description="ui",
+        success_criteria=[],
+        metadata={"session_key": "websocket:ui-chat"},
+    )
+    run = engine.create_run(workflow, goal, {}, executor="dynamic")
+    run.state = "running"
+    run.current_step = "plan"
+    engine.save_run(run)
+
+    bus = MagicMock()
+    channel = _ch(bus)
+    channel.gateway.tokens.api_tokens["tok"] = time.monotonic() + 300.0
+    enc = quote("websocket:ui-chat", safe="")
+    req = Request(
+        f"/api/sessions/{enc}/workflow-runs",
+        Headers([("Authorization", "Bearer tok")]),
+    )
+
+    resp = channel.gateway.http._handle_session_workflow_runs(req, enc)
+
+    assert resp.status_code == 200
+    body = json.loads(resp.body.decode())
+    assert body["items"] == [
+        {
+            "run_id": run.run_id,
+            "workflow_id": "ui_dashboard",
+            "goal_id": "goal-ui",
+            "state": "running",
+            "current_step": "plan",
+            "updated_at": run.updated_at,
+            "finished_at": None,
+            "error": None,
+            "step_count": 1,
+            "completed_steps": 0,
+        }
+    ]
+
+
+def test_handle_session_workflow_run_detail_and_actions(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace
+    from urllib.parse import quote
+    from unittest.mock import AsyncMock
+
+    from websockets.datastructures import Headers
+    from websockets.http11 import Request
+
+    from teai_builder.agent.goal_validator import Goal
+    from teai_builder.agent.workflow_engine import WorkflowDefinition, WorkflowEngine, WorkflowStep
+
+    monkeypatch.setattr("teai_builder.config.paths.get_data_dir", lambda: tmp_path)
+    engine = WorkflowEngine(parallel_executor=SimpleNamespace())
+    workflow = WorkflowDefinition(
+        workflow_id="ui_actions",
+        name="UI Actions",
+        description="dashboard controls",
+        steps=[WorkflowStep(step_id="plan", name="Plan", prompt_template="plan")],
+    )
+    goal = Goal(
+        goal_id="goal-actions",
+        description="controls",
+        success_criteria=[],
+        metadata={"session_key": "websocket:ui-chat"},
+    )
+    run = engine.create_run(workflow, goal, {}, executor="dynamic")
+    run.state = "failed"
+    run.current_step = "plan"
+    run.status_history.append({"state": "failed", "at": time.time(), "detail": "test failure"})
+    run.metadata["checkpoints"] = [{"step_id": "plan", "checkpoint_id": "cp-plan", "saved_at": time.time()}]
+    engine.save_run(run)
+
+    bus = SimpleNamespace(publish_inbound=AsyncMock())
+    channel = _ch(bus)
+    channel.gateway.tokens.api_tokens["tok"] = time.monotonic() + 300.0
+    enc = quote("websocket:ui-chat", safe="")
+
+    detail_req = Request(
+        f"/api/sessions/{enc}/workflow-runs/{quote(run.run_id, safe='')}",
+        Headers([("Authorization", "Bearer tok")]),
+    )
+    detail_resp = channel.gateway.http._handle_session_workflow_run_detail(detail_req, enc, run.run_id)
+    assert detail_resp.status_code == 200
+    detail_body = json.loads(detail_resp.body.decode())
+    assert detail_body["run"]["run_id"] == run.run_id
+    assert detail_body["run"]["step_states"][0]["step_id"] == "plan"
+    assert detail_body["run"]["checkpoints"][0]["checkpoint_id"] == "cp-plan"
+
+    resume_req = SimpleNamespace(
+        path=f"/api/sessions/{enc}/workflow-runs/{quote(run.run_id, safe='')}/resume",
+        headers=Headers([("Authorization", "Bearer tok")]),
+        method="POST",
+    )
+    resume_resp = channel.gateway.http._handle_session_workflow_run_action(resume_req, enc, run.run_id, "resume")
+    assert resume_resp.status_code == 200
+    assert json.loads(resume_resp.body.decode())["accepted"] is True
+    bus.publish_inbound.assert_called_once()
+    published_msg = bus.publish_inbound.call_args.args[0]
+    assert published_msg.channel == "websocket"
+    assert published_msg.chat_id == "ui-chat"
+    assert published_msg.content == f"/workflow resume {run.run_id}"
+
+
+def test_handle_session_checkpoints_supports_list_create_and_restore(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace
+    from urllib.parse import quote
+
+    from websockets.datastructures import Headers
+    from websockets.http11 import Request
+
+    from teai_builder.agent.checkpoint import Checkpoint, CheckpointStore
+
+    monkeypatch.setattr("teai_builder.config.paths.get_data_dir", lambda: tmp_path)
+    store = CheckpointStore(storage_dir=tmp_path / "checkpoints")
+    monkeypatch.setattr("teai_builder.agent.checkpoint.get_checkpoint_store", lambda: store)
+    session_manager = SessionManager(tmp_path / "sessions")
+    session = session_manager.get_or_create("websocket:cp-chat")
+    session.messages = [{"role": "user", "content": "hello"}]
+    session_manager.save(session)
+    store.save(
+        Checkpoint(
+            checkpoint_id="cp-1",
+            session_key="websocket:cp-chat",
+            created_at=time.time(),
+            context_budget_pct=0.5,
+            state={"workflow_id": "ui_dashboard", "run_id": "run-1", "step_id": "plan"},
+            messages=[{"role": "assistant", "content": "saved"}],
+            metadata={
+                "kind": "workflow",
+                "workflow_id": "ui_dashboard",
+                "run_id": "run-1",
+                "step_id": "plan",
+            },
+        )
+    )
+
+    bus = MagicMock()
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"]},
+        bus,
+        gateway=_basic_handler(bus, session_manager=session_manager),
+    )
+    channel.gateway.tokens.api_tokens["tok"] = time.monotonic() + 300.0
+    enc = quote("websocket:cp-chat", safe="")
+
+    list_req = Request(
+        f"/api/sessions/{enc}/checkpoints",
+        Headers([("Authorization", "Bearer tok")]),
+    )
+    list_resp = channel.gateway.http._handle_session_checkpoints(list_req, enc)
+    list_body = json.loads(list_resp.body.decode())
+    assert list_resp.status_code == 200
+    assert list_body["items"][0]["checkpoint_id"] == "cp-1"
+    assert list_body["items"][0]["workflow_id"] == "ui_dashboard"
+
+    create_req = SimpleNamespace(
+        path=f"/api/sessions/{enc}/checkpoints",
+        headers=Headers([("Authorization", "Bearer tok")]),
+        method="POST",
+    )
+    create_resp = channel.gateway.http._handle_session_checkpoints(create_req, enc)
+    create_body = json.loads(create_resp.body.decode())
+    assert create_resp.status_code == 200
+    assert create_body["checkpoint_id"]
+
+    restore_req = SimpleNamespace(
+        path=f"/api/sessions/{enc}/checkpoints/cp-1/restore",
+        headers=Headers([("Authorization", "Bearer tok")]),
+        method="POST",
+    )
+    restore_resp = channel.gateway.http._handle_session_checkpoint_restore(restore_req, enc, "cp-1")
+    assert restore_resp.status_code == 200
+    assert json.loads(restore_resp.body.decode()) == {"restored": True}
+    restored_session = session_manager.get_or_create("websocket:cp-chat")
+    assert restored_session.messages == [{"role": "assistant", "content": "saved"}]
+
+    rebuild_req = Request(
+        f"/api/sessions/{enc}/checkpoints/cp-1/rebuild",
+        Headers([("Authorization", "Bearer tok")]),
+    )
+    rebuild_resp = channel.gateway.http._handle_session_checkpoint_rebuild(rebuild_req, enc, "cp-1")
+    assert rebuild_resp.status_code == 200
+    rebuild_body = json.loads(rebuild_resp.body.decode())
+    assert "Checkpoint: `cp-1`" in rebuild_body["summary"]
+    assert rebuild_body["checkpoint"]["checkpoint_id"] == "cp-1"
+    assert rebuild_body["checkpoint"]["run_id"] == "run-1"
 
 
 def test_file_preview_normalizes_windows_file_url() -> None:

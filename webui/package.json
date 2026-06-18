@@ -7,8 +7,8 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.build.json && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "npx vitest run --pool vmThreads",
+    "test:watch": "npx vitest --pool vmThreads",
     "lint": "eslint src --max-warnings 0"
   },
   "dependencies": {

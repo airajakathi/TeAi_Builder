@@ -2,8 +2,10 @@
 
 import base64
 import json
+import os
 import re
 import shutil
+import tempfile
 import time
 import uuid
 from contextlib import suppress
@@ -310,13 +312,40 @@ def _cleanup_tool_result_buckets(root: Path, current_bucket: Path) -> None:
 
 
 def _write_text_atomic(path: Path, content: str) -> None:
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    write_text_atomic(path, content)
+
+
+def _fsync_directory(path: Path) -> None:
     try:
-        tmp.write_text(content, encoding="utf-8")
-        tmp.replace(path)
+        dir_fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
     finally:
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
+        os.close(dir_fd)
+
+
+def write_bytes_atomic(path: Path, content: bytes, *, fsync: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+            if fsync:
+                f.flush()
+                os.fsync(f.fileno())
+        os.replace(tmp, path)
+        if fsync:
+            _fsync_directory(path.parent)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def write_text_atomic(path: Path, content: str, *, fsync: bool = False) -> None:
+    write_bytes_atomic(path, content.encode("utf-8"), fsync=fsync)
 
 
 def maybe_persist_tool_result(

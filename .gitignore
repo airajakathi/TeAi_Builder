@@ -87,6 +87,12 @@ Desktop.ini
 *~
 nano.*.save
 
+# Local runtime / instance data
+instance/
+.teai_builder-home/
+MagicMock/
+cursor-suite-smoke/
+
 # Environment & secrets (keep examples tracked if needed)
 .env.*
 !.env.example

@@ -61,7 +61,7 @@ interface ActivityCounts {
   primaryMcpStatus?: McpRunStatus;
 }
 
-interface CliRunSummary {
+export interface CliRunSummary {
   key: string;
   name: string;
   args: string[];
@@ -174,6 +174,7 @@ interface AgentActivityClusterProps {
   cliApps?: CliAppInfo[];
   mcpPresets?: McpPresetInfo[];
   onOpenFilePreview?: (path: string) => void;
+  onReuseCliRun?: (run: CliRunSummary) => void;
 }
 
 /**
@@ -188,6 +189,7 @@ export function AgentActivityCluster({
   cliApps = [],
   mcpPresets = [],
   onOpenFilePreview,
+  onReuseCliRun,
 }: AgentActivityClusterProps) {
   const { t } = useTranslation();
   const fileEdits = useMemo(
@@ -235,10 +237,17 @@ export function AgentActivityCluster({
   const scrollFrameRef = useRef<number | null>(null);
   const wasTurnStreamingRef = useRef(isTurnStreaming);
   const wasTurnStreaming = wasTurnStreamingRef.current;
+  const hasFailedCliRun = cliRuns.some((run) => run.status === "error");
+  const hasFailedMcpRun = mcpRuns.some((run) => run.status === "error");
   /** Live work stays open; completed work briefly shows the done state, then tucks away. */
   const outerExpanded = userToggledOuter
     ? outerOpenLocal
-    : isTurnStreaming || completionHoldOpen || (wasTurnStreaming && !isTurnStreaming);
+    : isTurnStreaming
+      || completionHoldOpen
+      || hasFailedCliRun
+      || hasFailedMcpRun
+      || hasFailedFiles
+      || (wasTurnStreaming && !isTurnStreaming);
 
   const hasLiveEditingFiles = isTurnStreaming && hasEditingFiles;
   const singleFilePath = fileCount === 1 ? primaryFilePath : undefined;
@@ -511,6 +520,7 @@ export function AgentActivityCluster({
                       active={isTurnStreaming}
                       cliAppsByName={cliAppsByName}
                       mcpPresetsByName={mcpPresetsByName}
+                      onReuseCliRun={onReuseCliRun}
                     />
                   );
                 }
@@ -670,11 +680,13 @@ function ActivityTraceTimeline({
   active,
   cliAppsByName,
   mcpPresetsByName,
+  onReuseCliRun,
 }: {
   message: UIMessage;
   active: boolean;
   cliAppsByName: Map<string, CliAppInfo>;
   mcpPresetsByName: Map<string, McpPresetInfo>;
+  onReuseCliRun?: (run: CliRunSummary) => void;
 }) {
   const lines = traceLines(message);
   const cliRunsByLine = cliRunMapByTraceLine(message);
@@ -709,6 +721,7 @@ function ActivityTraceTimeline({
           runs={[cliRun]}
           active={active}
           cliAppsByName={cliAppsByName}
+          onReuseCliRun={onReuseCliRun}
         />,
       );
       const evidence = evidenceByLine.get(line) ?? [];
@@ -760,6 +773,7 @@ function ActivityTraceTimeline({
         runs={[run]}
         active={active}
         cliAppsByName={cliAppsByName}
+        onReuseCliRun={onReuseCliRun}
       />,
     );
   }
@@ -1281,7 +1295,7 @@ function mergeCliRun(existing: CliRunSummary | undefined, incoming: CliRunSummar
     : existing;
 }
 
-function collectCliRuns(messages: UIMessage[]): CliRunSummary[] {
+export function collectCliRuns(messages: UIMessage[]): CliRunSummary[] {
   const runsByKey = new Map<string, CliRunSummary>();
   for (const message of messages) {
     if (message.kind !== "trace") continue;
@@ -1660,10 +1674,12 @@ function CliRunGroup({
   runs,
   active,
   cliAppsByName,
+  onReuseCliRun,
 }: {
   runs: CliRunSummary[];
   active: boolean;
   cliAppsByName: Map<string, CliAppInfo>;
+  onReuseCliRun?: (run: CliRunSummary) => void;
 }) {
   if (runs.length === 0) return null;
   return (
@@ -1674,13 +1690,24 @@ function CliRunGroup({
           run={run}
           active={active}
           app={cliAppsByName.get(run.name.toLowerCase())}
+          onReuseCliRun={onReuseCliRun}
         />
       ))}
     </ul>
   );
 }
 
-function CliRunRow({ run, active, app }: { run: CliRunSummary; active: boolean; app?: CliAppInfo }) {
+function CliRunRow({
+  run,
+  active,
+  app,
+  onReuseCliRun,
+}: {
+  run: CliRunSummary;
+  active: boolean;
+  app?: CliAppInfo;
+  onReuseCliRun?: (run: CliRunSummary) => void;
+}) {
   const { t } = useTranslation();
   const [logoIndex, setLogoIndex] = useState(0);
   const args = formatCliArgs(run);
@@ -1760,6 +1787,19 @@ function CliRunRow({ run, active, app }: { run: CliRunSummary; active: boolean; 
             <span className="min-w-0 truncate text-[12px] text-muted-foreground/55">
               {run.workingDir}
             </span>
+          </>
+        ) : null}
+        {onReuseCliRun && run.status !== "running" ? (
+          <>
+            <span className="shrink-0 text-muted-foreground/30">·</span>
+            <button
+              type="button"
+              onClick={() => onReuseCliRun(run)}
+              className="shrink-0 rounded-sm text-[11px] font-medium text-primary/80 transition-colors hover:text-primary"
+              data-testid={`activity-cli-reuse-${run.name.toLowerCase()}`}
+            >
+              {t("message.cliRunReuse", { defaultValue: "Reuse" })}
+            </button>
           </>
         ) : null}
       </div>

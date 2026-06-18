@@ -360,6 +360,7 @@ describe("TeaiBuilderClient", () => {
       "chat-title",
       "metadata",
       expect.objectContaining({ project_path: "/tmp/project" }),
+      undefined,
     );
     expect(chatHandler).not.toHaveBeenCalled();
   });
@@ -465,6 +466,49 @@ describe("TeaiBuilderClient", () => {
     const dropped = client.transcribeAudio("data:audio/webm;base64,BBBB", { timeoutMs: 1_000 });
     lastSocket().close();
     await expect(dropped).rejects.toThrow("socket closed");
+  });
+
+  it("sends file save requests and resolves file_saved responses", async () => {
+    const client = new TeaiBuilderClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    lastSocket().fakeOpen();
+
+    const promise = client.saveFile("chat-x", "/workspace/app.ts", "export const ok = true;", {
+      baseRevision: "rev-1",
+    });
+    const frame = JSON.parse(lastSocket().sent.at(-1) as string);
+    expect(frame).toMatchObject({
+      type: "save_file",
+      chat_id: "chat-x",
+      path: "/workspace/app.ts",
+      content: "export const ok = true;",
+      base_revision: "rev-1",
+    });
+    expect(typeof frame.request_id).toBe("string");
+
+    lastSocket().fakeMessage({
+      event: "file_saved",
+      request_id: frame.request_id,
+      chat_id: "chat-x",
+      payload: {
+        path: "/workspace/app.ts",
+        display_path: "app.ts",
+        project_path: "/workspace",
+        language: "typescript",
+        content: "export const ok = true;",
+        size: 23,
+        revision: "rev-2",
+        truncated: false,
+      },
+    });
+    await expect(promise).resolves.toMatchObject({
+      path: "/workspace/app.ts",
+      content: "export const ok = true;",
+    });
   });
 
   it("queues sends while connecting and flushes on open", () => {

@@ -1,7 +1,7 @@
 import { Fragment, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { MessageBubble } from "@/components/MessageBubble";
-import { AgentActivityCluster } from "@/components/thread/AgentActivityCluster";
+import { AgentActivityCluster, type CliRunSummary } from "@/components/thread/AgentActivityCluster";
 import { normalizeActivityTimeline, type TurnUnit } from "@/lib/activity-timeline";
 import type { CliAppInfo, McpPresetInfo, UIMessage } from "@/lib/types";
 
@@ -15,6 +15,7 @@ interface ThreadMessagesProps {
   forkBoundaryMessageCount?: number | null;
   onOpenFilePreview?: (path: string) => void;
   onForkFromMessage?: (beforeUserIndex: number) => void;
+  onReuseCliRun?: (run: CliRunSummary) => void;
 }
 
 export type DisplayUnit = TurnUnit;
@@ -69,6 +70,7 @@ export function ThreadMessages({
   forkBoundaryMessageCount = null,
   onOpenFilePreview,
   onForkFromMessage,
+  onReuseCliRun,
 }: ThreadMessagesProps) {
   const { t } = useTranslation();
   const units = useMemo(() => buildDisplayUnits(messages, isStreaming), [isStreaming, messages]);
@@ -119,6 +121,7 @@ export function ThreadMessages({
                   cliApps={cliApps}
                   mcpPresets={mcpPresets}
                   onOpenFilePreview={onOpenFilePreview}
+                  onReuseCliRun={onReuseCliRun}
                 />
               ) : (
                 <MessageBubble

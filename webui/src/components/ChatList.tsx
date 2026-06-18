@@ -55,6 +55,7 @@ interface ChatListProps {
   onToggleGroup?: (groupId: string) => void;
   onRequestRenameProject?: (projectKey: string, label: string) => void;
   onNewChatInProject?: (projectPath: string, projectName: string) => void;
+  onOpenProject?: (projectId: string) => void;
   pinnedKeys?: string[];
   archivedKeys?: string[];
   titleOverrides?: Record<string, string>;
@@ -84,6 +85,7 @@ export const ChatList = memo(function ChatList({
   onToggleGroup,
   onRequestRenameProject,
   onNewChatInProject,
+  onOpenProject,
   pinnedKeys = [],
   archivedKeys = [],
   titleOverrides = {},
@@ -227,11 +229,17 @@ export const ChatList = memo(function ChatList({
                 <ProjectGroupHeader
                   label={group.label}
                   path={group.projectPath}
+                  project={group.project ?? null}
                   collapsed={Boolean(collapsedGroups[group.id])}
                   onToggle={() => onToggleGroup?.(group.id)}
                   onRequestRename={
                     group.projectKey && onRequestRenameProject
                       ? () => onRequestRenameProject(group.projectKey ?? "", group.label)
+                      : undefined
+                  }
+                  onOpenProject={
+                    group.project?.id && onOpenProject
+                      ? () => onOpenProject(group.project?.id ?? "")
                       : undefined
                   }
                   onNewChat={
@@ -420,18 +428,22 @@ export const ChatList = memo(function ChatList({
 function ProjectGroupHeader({
   label,
   path,
+  project,
   collapsed,
   onToggle,
   onRequestRename,
+  onOpenProject,
   onNewChat,
   actionMenuPortalContainer,
   updatedAt,
 }: {
   label: string;
   path?: string;
+  project?: ChatSummary["project"];
   collapsed: boolean;
   onToggle: () => void;
   onRequestRename?: () => void;
+  onOpenProject?: () => void;
   onNewChat?: () => void;
   actionMenuPortalContainer?: HTMLElement | null;
   updatedAt?: string | null;
@@ -445,12 +457,25 @@ function ProjectGroupHeader({
     >
       <button
         type="button"
+        aria-label={collapsed ? "Expand project" : "Collapse project"}
         aria-expanded={!collapsed}
         onClick={onToggle}
+        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground/80 transition-colors hover:bg-sidebar-accent/45 hover:text-sidebar-foreground"
+      >
+        <Folder className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      </button>
+      <button
+        type="button"
+        onClick={onOpenProject ?? onToggle}
         className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-sidebar-accent/45 hover:text-sidebar-foreground"
       >
         <Folder className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="min-w-0 flex-1 truncate">{label}</span>
+        {project ? (
+          <span className="shrink-0 rounded-full border border-border/70 bg-background/70 px-1.5 py-0.5 text-[10px] text-foreground/80">
+            {project.progress.percent}%
+          </span>
+        ) : null}
       </button>
       {updatedAt ? (
         <span className="shrink-0 text-[11px] text-muted-foreground/55">

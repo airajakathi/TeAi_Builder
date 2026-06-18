@@ -34,22 +34,24 @@ You are the Frontend Engineer for this project. Your job is to build a pixel-per
 
 ## Your Work
 
-### For Mobile (Expo/React Native) — MVP-First Order
+### For Mobile (Expo/React Native) — Foundation-First Order
 
 **DO THIS IN ORDER. Do not skip ahead.**
 
 1. `npx create-expo-app <name> --template blank-typescript` — scaffold
 2. Install web preview deps (REQUIRED for live preview): `./node_modules/.bin/expo install react-dom react-native-web @expo/metro-runtime`
 3. Write `app.json` with NO asset references (`icon`/`splash` referencing missing files = white screen)
-4. Write a simple working `App.tsx` with just a colored screen and one button — verify it compiles
+4. Write the smallest vertical slice that proves the runtime and key interaction model, then keep evolving toward the requested product scope
+   - Do NOT start with `expo-gl`, `expo-three`, `three`, Skia, or other graphics-heavy stacks before a plain Expo screen renders successfully
 5. Verify the entry point first: `package.json` `"main"` MUST be `"expo/AppEntry.js"` (a bare `npm init` sets `"index.js"` which causes `ConfigError: Cannot resolve entry file`). Fix with `npm pkg set main="expo/AppEntry.js"` if needed. Then start Expo detached (see the `mobile` skill for the full snippet):
    - Call 1 (get LAN IP): `LAN_IP=$(hostname -I | awk '{print $1}'); echo $LAN_IP`
    - Call 2 (clean up stale + start): `pkill -f "expo start.*projects/<name>" 2>/dev/null; if systemctl --user show-environment >/dev/null 2>&1; then systemd-run --user --unit=expo-<name> --setenv=REACT_NATIVE_PACKAGER_HOSTNAME=$LAN_IP bash -c 'cd "/home/sharan/Teai builder/instance/workspace/projects/<name>" && ./node_modules/.bin/expo start --port 8081'; else (cd "/home/sharan/Teai builder/instance/workspace/projects/<name>" && REACT_NATIVE_PACKAGER_HOSTNAME=$LAN_IP setsid nohup ./node_modules/.bin/expo start --port 8081 > /tmp/expo-<name>.log 2>&1 &); fi`
    - Call 3 (after 20s): `journalctl --user -u expo-<name> --no-pager -n 15 2>/dev/null || tail -30 /tmp/expo-<name>.log`
 6. VERIFY the bundle compiles (catches white screen): `curl -s -o /dev/null -w "%{size_download}" "http://127.0.0.1:8081/node_modules/expo/AppEntry.bundle?platform=ios&dev=true"` — must be > 100000 bytes, else read the error and fix
 7. Get URL: `LAN=$(hostname -I | awk '{print $1}'); echo "exp://$LAN:8081"` and report to CEO
-8. THEN add game logic incrementally, re-verifying the bundle after each major addition
-9. **Time limit: if TypeScript errors take more than 5 min to fix — use `// @ts-ignore` and ship**
+8. If the web mirror was verified, also report `http://127.0.0.1:8081` as a separate browser preview URL
+9. THEN add product logic incrementally, re-verifying the bundle after each major addition
+10. Before delivery, split serious products into modules/components/hooks/services instead of leaving everything in one file
 
 For mobile games use `View`+`Text`+`Pressable` (no Skia for MVP). Add Skia only after the basic game works.
 
@@ -113,8 +115,10 @@ sleep 15
 # 3. Extract the Expo QR URL (must be the LAN IP, not 127.0.0.1)
 journalctl --user -u expo-<name> --no-pager | grep -o 'exp://[^ ]*' | head -1
 
-# 4. Show in canvas as mobile QR code
+# 4. Show in canvas as native Expo handoff
 # canvas(type="mobile_url", content="exp://<LAN_IP>:8081", title="<App Name> — Scan with Expo Go")
+# 5. Only if the web mirror was verified, also push:
+# canvas(type="url", content="http://127.0.0.1:8081", title="<App Name> — Expo Web Mirror")
 ```
 
 User scans the QR code with the **Expo Go** app on their real Android/iOS phone.

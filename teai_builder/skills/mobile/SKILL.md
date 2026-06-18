@@ -1,22 +1,22 @@
 ---
 name: mobile
-description: Build real Android/iOS apps with Expo. MVP first — get it running in 10 minutes, then add features.
+description: Build real Android/iOS apps with Expo. Start with a verified native foundation, then finish to the requested production scope.
 metadata: {"teai_builder": {"emoji": "📱", "always": true}}
 ---
 
 # Mobile App Development — Expo (React Native)
 
-## The Golden Rule: Running App in 10 Minutes or Less
+## The Golden Rule: Correct Native Foundation First
 
-**Do NOT spend hours planning architecture before the app runs. Get it running FIRST, then improve.**
+**Do NOT fake a mobile product with HTML. Start with a verified Expo foundation, then continue until the requested product is genuinely shippable.**
 
-| Phase | Time limit | Goal |
-|-------|-----------|------|
-| Scaffold + basic screen | 5 min | `npx expo start` shows QR code |
-| Core game logic | 15 min | App playable end-to-end |
-| Polish | later | Animations, sounds, polish |
+| Phase | Goal |
+|-------|------|
+| Foundation | Expo scaffold + verified native/web bundles |
+| Product core | Main gameplay/app flows working end-to-end |
+| Production pass | architecture cleanup, persistence, tests, packaging, runtime proof |
 
-If you cannot get the app to start within 10 minutes, something is wrong. Stop and report.
+If the app cannot start correctly, stop and fix the foundation before feature work.
 
 ---
 
@@ -98,17 +98,20 @@ Write a minimal `app.json` with NO asset references:
 ```
 Add `icon`/`splash` only AFTER you actually generate the image files. **A missing asset = white screen = failed delivery.**
 
-### Step 3: Write the game in ONE file first (5 minutes)
-Put ALL game code in `App.tsx`. Use ONLY:
+### Step 3: Build a working vertical slice, then modularize before delivery
+Start with the minimum files needed to verify the runtime, but do **not** leave a serious product trapped in one giant `App.tsx`.
+Move into feature modules, shared components, state, and services before calling the project done.
+
+Use ONLY the minimum runtime-safe primitives for the first slice:
 - `View` — for board squares and layout
 - `Text` — for labels, scores, dice face
 - `TouchableOpacity` or `Pressable` — for tappable pieces
 - `StyleSheet.create({})` — for all styling
 - `useState`, `useCallback` — for game state
 
-No Canvas, no Skia, no complex components for the MVP. A Ludo board is just `View` grids with colored squares.
+No Canvas, no Skia, no complex components for the first verified slice unless the design truly needs them.
 
-### Step 4: Start Expo immediately after writing App.tsx
+### Step 4: Start Expo immediately after the first verified slice
 
 **TWO SEPARATE exec calls — never combine them!**
 
@@ -211,7 +214,7 @@ node smoke-test.js "http://127.0.0.1:8081/"
 
 Never mark delivery as successful after only the bundle-size check.
 
-### Step 6: Show in canvas (live preview + QR together)
+### Step 6: Show in canvas (native Expo handoff first, web mirror separately)
 ```bash
 LAN_IP=$(hostname -I | awk '{print $1}'); echo "exp://$LAN_IP:8081"
 ```
@@ -221,11 +224,17 @@ Then call canvas:
 canvas(type="mobile_url", content="exp://192.168.x.x:8081", title="<App> — Scan with Expo Go")
 ```
 
-The canvas `mobile_url` view automatically shows BOTH:
-- **Live preview** — the running app inside a phone mockup (via the web bundle)
-- **QR code** — for scanning with Expo Go on a real Android/iOS phone
+If the web mirror was verified in Step 5b, also show it separately:
+```
+canvas(type="url", content="http://127.0.0.1:8081", title="<App> — Expo Web Mirror")
+```
 
-**The user scans the QR with Expo Go (free app), OR watches the live preview right in the canvas.**
+When `canvas()` is called from the project workspace, TeAI Builder now records
+these preview artifacts automatically for the delivery gate.
+
+**Do not treat `exp://` as a browser iframe URL.** Use `mobile_url` for the real
+Expo Go/native handoff, and use a separate `url` canvas item only for the
+verified web mirror.
 
 ---
 
@@ -235,7 +244,7 @@ The canvas `mobile_url` view automatically shows BOTH:
 |-----------|----------|
 | Board game (Ludo, Chess) | `View` grid + `TouchableOpacity` tokens — pure React Native, no Canvas |
 | Endless runner (Temple Run) | Expo + `react-native-game-engine` — installed AFTER app starts |
-| Graphics-heavy | Expo + `@shopify/react-native-skia` — only add after MVP works |
+| Graphics-heavy | Expo + `@shopify/react-native-skia` or `expo-gl`/`expo-three` — only add after MVP works and the plain app renders cleanly |
 
 ---
 

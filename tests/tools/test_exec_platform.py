@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from teai_builder.agent.tools.shell import ExecTool
+from teai_builder.agent.tools.sandbox import SandboxBackendStatus
 
 _WINDOWS_ENV_KEYS = {
     "APPDATA", "LOCALAPPDATA", "ProgramData",
@@ -202,6 +203,31 @@ class TestPathAppendPlatform:
         assert captured_env["TEAI_BUILDER_PATH_APPEND"] == "/opt/bin; echo INJECTED"
         assert "INJECTED" not in captured_cmd
 
+
+class TestWorkspaceRuntimeDirs:
+
+    def test_prepare_command_uses_workspace_local_home_when_home_is_read_only(
+        self, monkeypatch, tmp_path
+    ):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        readonly_home = tmp_path / "readonly-home"
+        readonly_home.mkdir()
+
+        monkeypatch.setenv("HOME", str(readonly_home))
+        monkeypatch.setattr(
+            "teai_builder.agent.tools.shell.os.access",
+            lambda path, mode: False if path == str(readonly_home) else True,
+        )
+
+        with patch("teai_builder.agent.tools.shell._IS_WINDOWS", False):
+            prepared = ExecTool(working_dir=str(workspace))._prepare_command("pwd")
+
+        assert not isinstance(prepared, str)
+        assert prepared.env["HOME"] == str(workspace / ".teai_builder-home")
+        assert prepared.env["NPM_CONFIG_CACHE"] == str(workspace / ".teai_builder-home" / ".npm")
+        assert prepared.env["XDG_CACHE_HOME"] == str(workspace / ".teai_builder-home" / ".cache")
+
     @pytest.mark.asyncio
     async def test_unix_path_prepend_uses_env_var_in_fixed_export(self):
         """On Unix, path_prepend must not be interpolated into shell source."""
@@ -319,18 +345,54 @@ class TestPathAppendPlatform:
 class TestSandboxPlatform:
 
     @pytest.mark.asyncio
-    async def test_bwrap_skipped_on_windows(self):
-        """bwrap must be silently skipped on Windows, not crash."""
+    async def test_bwrap_blocked_when_backend_unavailable_in_strict_mode(self):
+        """Configured sandboxing must fail closed when the backend is unavailable."""
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"ok", b"")
         mock_proc.returncode = 0
 
         with (
-            patch("teai_builder.agent.tools.shell._IS_WINDOWS", True),
+            patch(
+                "teai_builder.agent.tools.shell.sandbox_backend_status",
+                return_value=SandboxBackendStatus(
+                    backend="bwrap",
+                    available=False,
+                    provider="bwrap",
+                    provider_label="Bubblewrap",
+                    summary="Bubblewrap unavailable",
+                ),
+            ),
             patch.object(ExecTool, "_spawn", return_value=mock_proc) as mock_spawn,
             patch.object(ExecTool, "_guard_command", return_value=None),
         ):
             tool = ExecTool(sandbox="bwrap")
+            result = await tool.execute(command="dir")
+
+        assert "strict_sandbox" in result
+        mock_spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bwrap_can_fallback_when_strict_mode_disabled(self):
+        """Callers can opt into app-guard fallback explicitly."""
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"ok", b"")
+        mock_proc.returncode = 0
+
+        with (
+            patch(
+                "teai_builder.agent.tools.shell.sandbox_backend_status",
+                return_value=SandboxBackendStatus(
+                    backend="bwrap",
+                    available=False,
+                    provider="bwrap",
+                    provider_label="Bubblewrap",
+                    summary="Bubblewrap unavailable",
+                ),
+            ),
+            patch.object(ExecTool, "_spawn", return_value=mock_proc) as mock_spawn,
+            patch.object(ExecTool, "_guard_command", return_value=None),
+        ):
+            tool = ExecTool(sandbox="bwrap", strict_sandbox=False)
             result = await tool.execute(command="dir")
 
         assert "ok" in result

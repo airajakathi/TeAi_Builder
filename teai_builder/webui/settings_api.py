@@ -28,6 +28,7 @@ from teai_builder.providers.image_generation import (
     image_gen_provider_names,
 )
 from teai_builder.providers.registry import PROVIDERS, create_dynamic_spec, find_by_name
+from teai_builder.reliability import reliability_runtime_snapshot
 from teai_builder.security.workspace_access import workspace_sandbox_status
 from teai_builder.webui.token_usage import token_usage_payload
 from teai_builder.webui.workspaces import (
@@ -760,10 +761,26 @@ def settings_payload(
         )
 
     exec_config = config.tools.exec
+    tool_governance = config.tools.governance
+    extra_channels = getattr(config.channels, "__pydantic_extra__", None) or {}
+    configured_channels = [
+        {
+            "name": str(name),
+            "enabled": bool(
+                isinstance(section, dict)
+                and section.get("enabled", True)
+            ),
+        }
+        for name, section in extra_channels.items()
+        if isinstance(name, str)
+    ]
     sandbox_status = workspace_sandbox_status(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         workspace=config.workspace_path,
+        sandbox_backend=config.tools.exec.sandbox,
+        strict_execution=config.tools.exec.strict_sandbox,
     )
+    reliability = reliability_runtime_snapshot(config, component="gateway")
     payload = {
         "agent": {
             "model": effective_preset.model,
@@ -825,6 +842,14 @@ def settings_payload(
             "max_upload_mb": transcription.max_upload_mb,
             "providers": _transcription_provider_rows(config),
         },
+        "channels": {
+            "configured": configured_channels,
+            "send_progress": config.channels.send_progress,
+            "send_tool_hints": config.channels.send_tool_hints,
+            "show_reasoning": config.channels.show_reasoning,
+            "extract_document_text": config.channels.extract_document_text,
+            "send_max_retries": config.channels.send_max_retries,
+        },
         "runtime": {
             "config_path": str(get_config_path().expanduser()),
             "workspace_path": str(config.workspace_path),
@@ -839,6 +864,7 @@ def settings_payload(
                 "schedule": defaults.dream.describe_schedule(),
             },
             "unified_session": defaults.unified_session,
+            "reliability": reliability,
         },
         "usage": token_usage_payload(timezone_name=defaults.timezone),
         "advanced": {
@@ -852,8 +878,35 @@ def settings_payload(
             "mcp_server_count": len(config.tools.mcp_servers),
             "exec_enabled": exec_config.enable,
             "exec_sandbox": exec_config.sandbox or None,
+            "exec_strict_sandbox": exec_config.strict_sandbox,
             "exec_path_prepend_set": bool(exec_config.path_prepend),
             "exec_path_append_set": bool(exec_config.path_append),
+            "telemetry_enabled": config.reliability.telemetry.enabled,
+            "local_telemetry_audit_log": config.reliability.telemetry.local_audit_log,
+            "crash_reports_enabled": config.reliability.crash_reports.enabled,
+        },
+        "tool_governance": {
+            "active_profile": tool_governance.active_profile,
+            "profiles": [
+                {
+                    "name": "default",
+                    "description": "Implicit default profile",
+                    "enabled_tools": ["*"],
+                    "disabled_tools": [],
+                    "active": tool_governance.active_profile == "default",
+                },
+                *[
+                    {
+                        "name": name,
+                        "description": profile.description,
+                        "enabled_tools": list(profile.enabled_tools),
+                        "disabled_tools": list(profile.disabled_tools),
+                        "active": tool_governance.active_profile == name,
+                    }
+                    for name, profile in tool_governance.profiles.items()
+                ],
+            ],
+            "permissions": dict(tool_governance.permissions),
         },
         "requires_restart": requires_restart,
         "version": _version_payload(),
@@ -876,6 +929,7 @@ def settings_usage_payload() -> dict[str, Any]:
 def update_agent_settings(query: QueryParams) -> dict[str, Any]:
     config = load_config()
     defaults = config.agents.defaults
+    channels = config.channels
     changed = False
     restart_required = False
 
@@ -963,6 +1017,83 @@ def update_agent_settings(query: QueryParams) -> dict[str, Any]:
             raise WebUISettingsError("tool_hint_max_length must be between 20 and 500")
         if defaults.tool_hint_max_length != parsed:
             defaults.tool_hint_max_length = parsed
+            changed = True
+            restart_required = True
+
+    channel_send_progress = _query_first_alias(
+        query,
+        "channel_send_progress",
+        "channelSendProgress",
+    )
+    if channel_send_progress is not None:
+        parsed = channel_send_progress.strip().lower()
+        if parsed not in {"true", "false"}:
+            raise WebUISettingsError("channel_send_progress must be true or false")
+        value = parsed == "true"
+        if channels.send_progress != value:
+            channels.send_progress = value
+            changed = True
+            restart_required = True
+
+    channel_send_tool_hints = _query_first_alias(
+        query,
+        "channel_send_tool_hints",
+        "channelSendToolHints",
+    )
+    if channel_send_tool_hints is not None:
+        parsed = channel_send_tool_hints.strip().lower()
+        if parsed not in {"true", "false"}:
+            raise WebUISettingsError("channel_send_tool_hints must be true or false")
+        value = parsed == "true"
+        if channels.send_tool_hints != value:
+            channels.send_tool_hints = value
+            changed = True
+            restart_required = True
+
+    channel_show_reasoning = _query_first_alias(
+        query,
+        "channel_show_reasoning",
+        "channelShowReasoning",
+    )
+    if channel_show_reasoning is not None:
+        parsed = channel_show_reasoning.strip().lower()
+        if parsed not in {"true", "false"}:
+            raise WebUISettingsError("channel_show_reasoning must be true or false")
+        value = parsed == "true"
+        if channels.show_reasoning != value:
+            channels.show_reasoning = value
+            changed = True
+            restart_required = True
+
+    channel_extract_document_text = _query_first_alias(
+        query,
+        "channel_extract_document_text",
+        "channelExtractDocumentText",
+    )
+    if channel_extract_document_text is not None:
+        parsed = channel_extract_document_text.strip().lower()
+        if parsed not in {"true", "false"}:
+            raise WebUISettingsError("channel_extract_document_text must be true or false")
+        value = parsed == "true"
+        if channels.extract_document_text != value:
+            channels.extract_document_text = value
+            changed = True
+            restart_required = True
+
+    channel_send_max_retries = _query_first_alias(
+        query,
+        "channel_send_max_retries",
+        "channelSendMaxRetries",
+    )
+    if channel_send_max_retries is not None:
+        try:
+            parsed = int(channel_send_max_retries)
+        except ValueError:
+            raise WebUISettingsError("channel_send_max_retries must be an integer") from None
+        if parsed < 0 or parsed > 10:
+            raise WebUISettingsError("channel_send_max_retries must be between 0 and 10")
+        if channels.send_max_retries != parsed:
+            channels.send_max_retries = parsed
             changed = True
             restart_required = True
 

@@ -15,16 +15,19 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, Tool] = {}
+        self._tool_permissions: dict[str, str] = {}
         self._cached_definitions: list[dict[str, Any]] | None = None
 
-    def register(self, tool: Tool) -> None:
+    def register(self, tool: Tool, *, permission: str = "allow") -> None:
         """Register a tool."""
         self._tools[tool.name] = tool
+        self._tool_permissions[tool.name] = permission
         self._cached_definitions = None
 
     def unregister(self, name: str) -> None:
         """Unregister a tool by name."""
         self._tools.pop(name, None)
+        self._tool_permissions.pop(name, None)
         self._cached_definitions = None
 
     def get(self, name: str) -> Tool | None:
@@ -52,6 +55,10 @@ class ToolRegistry:
     def has(self, name: str) -> bool:
         """Check if a tool is registered."""
         return name in self._tools
+
+    def get_permission(self, name: str) -> str:
+        """Return the approval policy for a registered tool."""
+        return self._tool_permissions.get(name, "allow")
 
     @staticmethod
     def _schema_name(schema: dict[str, Any]) -> str:
@@ -160,6 +167,19 @@ class ToolRegistry:
         tool, params, error = self.prepare_call(name, params)
         if error:
             return error + hint
+        permission = self.get_permission(name)
+        if permission == "deny":
+            return (
+                f"Error: Tool '{name}' is denied by the active tool permission policy. "
+                "Choose a different approach or update the permission policy."
+                + hint
+            )
+        if permission == "confirm":
+            return (
+                f"Error: Tool '{name}' requires approval under the active tool permission policy. "
+                "Do not retry automatically; ask for approval or use an allowed tool."
+                + hint
+            )
 
         try:
             assert tool is not None  # guarded by prepare_call()

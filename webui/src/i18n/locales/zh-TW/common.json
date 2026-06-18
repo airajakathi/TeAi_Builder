@@ -905,15 +905,29 @@
     "workspaceScopeRejected": {
       "title": "工作區未變更",
       "body": "閘道拒絕了要求的專案或存取權限，TeAi Builder 已繼續使用先前的工作區。"
+    },
+    "projectRequired": {
+      "title": "需要專案",
+      "body": "請先選擇或建立專案，再開始新聊天。"
     }
   },
   "workspace": {
     "dialog": {
+      "chooseFolder": "選擇資料夾",
+      "chooseFolderHint": "從這台機器中選擇一個現有資料夾。",
       "defaultProject": "預設工作區",
+      "createProject": "建立專案",
+      "createPlaceholder": "新專案名稱",
+      "createAction": "建立",
+      "creating": "建立中...",
+      "loadingProjects": "正在載入專案...",
+      "noFoldersFound": "找不到資料夾",
       "manual": "貼上路徑",
       "manualPlaceholder": "/Users/name/project",
       "usePath": "使用路徑",
-      "absolutePathRequired": "請輸入這台機器上的絕對資料夾路徑。"
+      "absolutePathRequired": "請輸入這台機器上的絕對資料夾路徑。",
+      "nameRequired": "請輸入專案名稱。",
+      "creationFailed": "無法建立專案。"
     }
   }
 }

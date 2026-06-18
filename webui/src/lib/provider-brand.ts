@@ -20,9 +20,9 @@ function googleFaviconUrl(domain: string): string {
 export function faviconUrls(domain: string): string[] {
   const faviconDomain = faviconDomainFromValue(domain);
   return [
-    officialFaviconUrl(faviconDomain),
-    duckDuckGoFaviconUrl(faviconDomain),
     googleFaviconUrl(domain),
+    duckDuckGoFaviconUrl(faviconDomain),
+    officialFaviconUrl(faviconDomain),
   ];
 }
 
@@ -79,13 +79,14 @@ export function logoFallbackUrls(logoUrl: string | null | undefined): string[] {
   const urls: string[] = [];
   const domain = domainFromLogoUrl(value);
   const isFaviconProxy = /^(https?:\/\/)?(www\.google\.com|google\.com|icons\.duckduckgo\.com)\//i.test(value);
+  const keepOriginal = /\.(svg|png|jpe?g|webp|gif)(?:[?#]|$)/i.test(value);
   if (domain && isFaviconProxy) {
     addUniqueLogoUrl(urls, value);
     faviconUrls(domain).forEach((url) => addUniqueLogoUrl(urls, url));
     return urls;
   }
-  addUniqueLogoUrl(urls, value);
   if (domain) faviconUrls(domain).forEach((url) => addUniqueLogoUrl(urls, url));
+  if (keepOriginal) addUniqueLogoUrl(urls, value);
   return urls;
 }
 

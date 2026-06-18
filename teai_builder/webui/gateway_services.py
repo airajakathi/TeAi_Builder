@@ -37,6 +37,7 @@ def build_gateway_services(
     static_dist_path: Path | None,
     workspace_path: Path,
     default_restrict_to_workspace: bool,
+    tools_config: Any | None = None,
     runtime_model_name: Any | None,
     runtime_surface: str,
     runtime_capabilities_overrides: dict[str, Any] | None,
@@ -45,6 +46,10 @@ def build_gateway_services(
     cron_pending_job_ids: Callable[[str], set[str]] | None = None,
     logger: Any = default_logger,
 ) -> GatewayServices:
+    if tools_config is None:
+        from teai_builder.config.schema import ToolsConfig
+
+        tools_config = ToolsConfig()
     tokens = GatewayTokenStore()
     media = WebUIMediaGateway(
         workspace_path=workspace_path,
@@ -68,6 +73,7 @@ def build_gateway_services(
         media=media,
         workspaces=workspaces,
         skills_workspace_path=workspace_path,
+        tools_config=tools_config,
         disabled_skills=disabled_skills,
         cron_service=cron_service,
         cron_pending_job_ids=cron_pending_job_ids,

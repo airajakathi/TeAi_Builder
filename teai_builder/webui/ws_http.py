@@ -9,9 +9,11 @@ Also houses shared HTTP utility functions used by both this module and
 
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -20,9 +22,14 @@ from loguru import logger
 from websockets.http11 import Request as WsRequest
 from websockets.http11 import Response
 
+from teai_builder.bus.events import InboundMessage
 from teai_builder.command.builtin import builtin_command_palette
 from teai_builder.utils.subagent_channel_display import scrub_subagent_messages_for_channel
-from teai_builder.webui.file_preview import WebUIFilePreviewError, file_preview_payload
+from teai_builder.webui.file_preview import (
+    WebUIFilePreviewError,
+    file_preview_payload,
+    file_symbol_payload,
+)
 from teai_builder.webui.gateway_tokens import GatewayTokenStore, token_response_payload
 from teai_builder.webui.http_utils import (
     case_insensitive_header as _case_insensitive_header,
@@ -71,7 +78,9 @@ from teai_builder.webui.sidebar_state import (
     read_webui_sidebar_state,
     write_webui_sidebar_state,
 )
+from teai_builder.webui.projects import bootstrap_project
 from teai_builder.webui.skills_api import webui_skill_detail_payload, webui_skills_payload
+from teai_builder.webui.tools_api import webui_tools_payload
 from teai_builder.webui.thread_disk import delete_webui_thread
 from teai_builder.webui.transcript import build_webui_thread_response
 from teai_builder.webui.workspaces import WebUIWorkspaceController
@@ -144,6 +153,7 @@ class GatewayHTTPHandler:
         media: WebUIMediaGateway,
         workspaces: WebUIWorkspaceController,
         skills_workspace_path: Path,
+        tools_config: Any,
         disabled_skills: set[str] | None = None,
         cron_service: CronService | None = None,
         cron_pending_job_ids: Callable[[str], set[str]] | None = None,
@@ -158,6 +168,7 @@ class GatewayHTTPHandler:
         self.media = media
         self.workspaces = workspaces
         self.skills_workspace_path = skills_workspace_path
+        self.tools_config = tools_config
         self.disabled_skills = disabled_skills or set()
         self.cron_service = cron_service
         self.cron_pending_job_ids = cron_pending_job_ids
@@ -314,10 +325,56 @@ class GatewayHTTPHandler:
         m = re.match(r"^/api/sessions/([^/]+)/file-preview$", got)
         if m:
             return self._handle_file_preview(request, m.group(1))
+        m = re.match(r"^/api/sessions/([^/]+)/file-symbols$", got)
+        if m:
+            return self._handle_file_symbols(request, m.group(1))
+
+        m = re.match(r"^/api/sessions/([^/]+)/workspace-tree$", got)
+        if m:
+            return self._handle_workspace_tree(request, m.group(1))
+        m = re.match(r"^/api/sessions/([^/]+)/workspace-search$", got)
+        if m:
+            return self._handle_workspace_search(request, m.group(1))
+        m = re.match(r"^/api/sessions/([^/]+)/workspace-content-search$", got)
+        if m:
+            return self._handle_workspace_content_search(request, m.group(1))
+        m = re.match(r"^/api/sessions/([^/]+)/workspace-symbol-search$", got)
+        if m:
+            return self._handle_workspace_symbol_search(request, m.group(1))
+        m = re.match(r"^/api/sessions/([^/]+)/workspace-reference-search$", got)
+        if m:
+            return self._handle_workspace_reference_search(request, m.group(1))
+        m = re.match(r"^/api/sessions/([^/]+)/workspace-problems$", got)
+        if m:
+            return self._handle_workspace_problems(request, m.group(1))
 
         m = re.match(r"^/api/sessions/([^/]+)/automations$", got)
         if m:
             return self._handle_session_automations(request, m.group(1))
+
+        m = re.match(r"^/api/sessions/([^/]+)/workflow-runs/([^/]+)/([^/]+)$", got)
+        if m:
+            return self._handle_session_workflow_run_action(request, m.group(1), m.group(2), m.group(3))
+
+        m = re.match(r"^/api/sessions/([^/]+)/workflow-runs/([^/]+)$", got)
+        if m:
+            return self._handle_session_workflow_run_detail(request, m.group(1), m.group(2))
+
+        m = re.match(r"^/api/sessions/([^/]+)/workflow-runs$", got)
+        if m:
+            return self._handle_session_workflow_runs(request, m.group(1))
+
+        m = re.match(r"^/api/sessions/([^/]+)/checkpoints/([^/]+)/rebuild$", got)
+        if m:
+            return self._handle_session_checkpoint_rebuild(request, m.group(1), m.group(2))
+
+        m = re.match(r"^/api/sessions/([^/]+)/checkpoints/([^/]+)/restore$", got)
+        if m:
+            return self._handle_session_checkpoint_restore(request, m.group(1), m.group(2))
+
+        m = re.match(r"^/api/sessions/([^/]+)/checkpoints$", got)
+        if m:
+            return self._handle_session_checkpoints(request, m.group(1))
 
         m = re.match(r"^/api/sessions/([^/]+)/delete$", got)
         if m:
@@ -345,6 +402,9 @@ class GatewayHTTPHandler:
                 row["run_started_at"] = started_at
             scope = self.workspaces.scope_for_session_key(key)
             row["workspace_scope"] = scope.payload()
+            project = self.workspaces.project_for_session_key(key)
+            if project is not None:
+                row["project"] = project
             cleaned.append(row)
         return _http_json_response({"sessions": cleaned})
 
@@ -365,6 +425,11 @@ class GatewayHTTPHandler:
         if isinstance(messages, list):
             scrub_subagent_messages_for_channel(messages)
         self.media.augment_media_urls(data)
+        scope = self.workspaces.scope_for_session_key(decoded_key)
+        data["workspace_scope"] = scope.payload()
+        project = self.workspaces.project_for_session_key(decoded_key)
+        if project is not None:
+            data["project"] = project
         return _http_json_response(data)
 
     def _handle_webui_thread_get(self, request: WsRequest, key: str) -> Response:
@@ -411,6 +476,9 @@ class GatewayHTTPHandler:
         if data is None:
             return _http_error(404, "webui thread not found")
         data["workspace_scope"] = scope.payload()
+        project = self.workspaces.project_for_session_key(decoded_key)
+        if project is not None:
+            data["project"] = project
         return _http_json_response(data)
 
     def _handle_file_preview(self, request: WsRequest, key: str) -> Response:
@@ -431,6 +499,177 @@ class GatewayHTTPHandler:
             return _http_error(e.status, e.message)
         return _http_json_response(payload)
 
+    def _handle_file_symbols(self, request: WsRequest, key: str) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+        path = _query_first(_parse_query(request.path), "path")
+        try:
+            payload = file_symbol_payload(
+                path,
+                scope=self.workspaces.scope_for_session_key(decoded_key),
+            )
+        except WebUIFilePreviewError as e:
+            return _http_error(e.status, e.message)
+        return _http_json_response(payload)
+
+    def _handle_workspace_tree(self, request: WsRequest, key: str) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+        from teai_builder.webui.workspace_tree import workspace_tree_payload
+
+        scope = self.workspaces.scope_for_session_key(decoded_key)
+        return _http_json_response(workspace_tree_payload(scope=scope))
+
+    def _handle_workspace_search(self, request: WsRequest, key: str) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+
+        query = _parse_query(request.path)
+        raw_limit = _query_first(query, "limit")
+        limit = 40
+        if raw_limit is not None and raw_limit.strip():
+            try:
+                limit = int(raw_limit)
+            except ValueError:
+                return _http_error(400, "invalid limit")
+        from teai_builder.webui.workspace_search import workspace_search_payload
+
+        scope = self.workspaces.scope_for_session_key(decoded_key)
+        return _http_json_response(
+            workspace_search_payload(
+                scope=scope,
+                query=_query_first(query, "q") or "",
+                limit=limit,
+            )
+        )
+
+    def _handle_workspace_content_search(self, request: WsRequest, key: str) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+
+        query = _parse_query(request.path)
+        raw_limit = _query_first(query, "limit")
+        limit = 40
+        if raw_limit is not None and raw_limit.strip():
+            try:
+                limit = int(raw_limit)
+            except ValueError:
+                return _http_error(400, "invalid limit")
+        from teai_builder.webui.workspace_search import workspace_content_search_payload
+
+        scope = self.workspaces.scope_for_session_key(decoded_key)
+        return _http_json_response(
+            workspace_content_search_payload(
+                scope=scope,
+                query=_query_first(query, "q") or "",
+                limit=limit,
+            )
+        )
+
+    def _handle_workspace_symbol_search(self, request: WsRequest, key: str) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+
+        query = _parse_query(request.path)
+        raw_limit = _query_first(query, "limit")
+        limit = 40
+        if raw_limit is not None and raw_limit.strip():
+            try:
+                limit = int(raw_limit)
+            except ValueError:
+                return _http_error(400, "invalid limit")
+        from teai_builder.webui.workspace_search import workspace_symbol_search_payload
+
+        scope = self.workspaces.scope_for_session_key(decoded_key)
+        return _http_json_response(
+            workspace_symbol_search_payload(
+                scope=scope,
+                query=_query_first(query, "q") or "",
+                limit=limit,
+            )
+        )
+
+    def _handle_workspace_reference_search(self, request: WsRequest, key: str) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+
+        query = _parse_query(request.path)
+        raw_limit = _query_first(query, "limit")
+        limit = 40
+        if raw_limit is not None and raw_limit.strip():
+            try:
+                limit = int(raw_limit)
+            except ValueError:
+                return _http_error(400, "invalid limit")
+        from teai_builder.webui.workspace_search import workspace_reference_search_payload
+
+        scope = self.workspaces.scope_for_session_key(decoded_key)
+        return _http_json_response(
+            workspace_reference_search_payload(
+                scope=scope,
+                query=_query_first(query, "q") or "",
+                limit=limit,
+            )
+        )
+
+    def _handle_workspace_problems(self, request: WsRequest, key: str) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+
+        query = _parse_query(request.path)
+        raw_limit = _query_first(query, "limit")
+        limit = 40
+        if raw_limit is not None and raw_limit.strip():
+            try:
+                limit = int(raw_limit)
+            except ValueError:
+                return _http_error(400, "invalid limit")
+        from teai_builder.webui.workspace_search import workspace_problems_payload
+
+        scope = self.workspaces.scope_for_session_key(decoded_key)
+        return _http_json_response(
+            workspace_problems_payload(
+                scope=scope,
+                query=_query_first(query, "q") or "",
+                limit=limit,
+            )
+        )
+
     def _handle_session_automations(self, request: WsRequest, key: str) -> Response:
         if not self.check_api_token(request):
             return _http_error(401, "Unauthorized")
@@ -449,6 +688,268 @@ class GatewayHTTPHandler:
                 pending_job_ids=pending_job_ids,
             )
         )
+
+    def _handle_session_workflow_runs(self, request: WsRequest, key: str) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+        from teai_builder.agent.llm3.workflow_service import LLM3WorkflowService
+
+        items = []
+        runs = LLM3WorkflowService.list_runs_from_storage(
+            limit=50,
+        )
+        for run in runs:
+            if run.metadata.get("session_key") != decoded_key:
+                continue
+            items.append(
+                {
+                    "run_id": run.run_id,
+                    "workflow_id": run.workflow_id,
+                    "goal_id": run.goal_id,
+                    "state": run.state,
+                    "current_step": run.current_step,
+                    "updated_at": run.updated_at,
+                    "finished_at": run.finished_at,
+                    "error": run.error,
+                    "step_count": len(run.step_states),
+                    "completed_steps": sum(
+                        1
+                        for step in run.step_states.values()
+                        if step.state == "completed"
+                    ),
+                }
+            )
+        return _http_json_response({"items": items})
+
+    def _handle_session_workflow_run_detail(
+        self,
+        request: WsRequest,
+        key: str,
+        run_id: str,
+    ) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+        from teai_builder.agent.llm3.workflow_service import LLM3WorkflowService
+
+        run = LLM3WorkflowService.load_run_from_storage(run_id)
+        if run is None or run.metadata.get("session_key") != decoded_key:
+            return _http_error(404, "workflow run not found")
+        checkpoints = []
+        for item in run.metadata.get("checkpoints", []) or []:
+            if isinstance(item, dict):
+                checkpoints.append(
+                    {
+                        "step_id": item.get("step_id"),
+                        "saved_at": item.get("saved_at"),
+                        "checkpoint_id": item.get("checkpoint_id"),
+                        "result_keys": item.get("result_keys", []),
+                    }
+                )
+        return _http_json_response(
+            {
+                "run": {
+                    "run_id": run.run_id,
+                    "workflow_id": run.workflow_id,
+                    "goal_id": run.goal_id,
+                    "state": run.state,
+                    "current_step": run.current_step,
+                    "started_at": run.started_at,
+                    "updated_at": run.updated_at,
+                    "finished_at": run.finished_at,
+                    "error": run.error,
+                    "cancel_requested": run.cancel_requested,
+                    "step_count": len(run.step_states),
+                    "completed_steps": sum(
+                        1
+                        for step in run.step_states.values()
+                        if step.state == "completed"
+                    ),
+                    "step_results": run.step_results,
+                    "status_history": [
+                        {
+                            "state": item.get("state"),
+                            "detail": item.get("detail"),
+                            "at": item.get("at", item.get("timestamp")),
+                        }
+                        for item in run.status_history
+                        if isinstance(item, dict)
+                    ],
+                    "checkpoints": checkpoints,
+                    "step_states": [
+                        {
+                            "step_id": step_id,
+                            "name": step_run.name,
+                            "state": step_run.state,
+                            "attempts": step_run.attempts,
+                            "started_at": step_run.started_at,
+                            "finished_at": step_run.finished_at,
+                            "error": step_run.error,
+                            "output": step_run.output,
+                        }
+                        for step_id, step_run in run.step_states.items()
+                    ],
+                }
+            }
+        )
+
+    def _dispatch_workflow_command(self, session_key: str, command: str) -> bool:
+        if self.bus is None:
+            return False
+        try:
+            _, chat_id = session_key.split(":", 1)
+        except ValueError:
+            return False
+        published = self.bus.publish_inbound(
+            InboundMessage(
+                channel="websocket",
+                sender_id="webui",
+                chat_id=chat_id,
+                content=command,
+            )
+        )
+        if not asyncio.iscoroutine(published):
+            return False
+        try:
+            asyncio.get_running_loop().create_task(published)
+        except RuntimeError:
+            asyncio.run(published)
+        return True
+
+    def _handle_session_workflow_run_action(
+        self,
+        request: WsRequest,
+        key: str,
+        run_id: str,
+        action: str,
+    ) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+        action_name = action.lower()
+        if action_name not in {"resume", "cancel"}:
+            return _http_error(404, "workflow action not found")
+        command = f"/workflow {action_name} {run_id}"
+        if not self._dispatch_workflow_command(decoded_key, command):
+            return _http_error(503, "workflow control unavailable")
+        return _http_json_response(
+            {
+                "accepted": True,
+                "action": action_name,
+                "command": command,
+            }
+        )
+
+    def _handle_session_checkpoints(self, request: WsRequest, key: str) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+        from teai_builder.agent.checkpoint import (
+            Checkpoint,
+            get_checkpoint_store,
+            summarize_checkpoint,
+        )
+
+        store = get_checkpoint_store()
+        request_method = getattr(request, "method", "GET")
+        if str(request_method).upper() == "POST":
+            if self.session_manager is None:
+                return _http_error(503, "session manager unavailable")
+            session = self.session_manager.get_or_create(decoded_key)
+            checkpoint = Checkpoint(
+                checkpoint_id=f"{int(time.time())}",
+                session_key=session.key,
+                created_at=time.time(),
+                context_budget_pct=0.0,
+                state={},
+                messages=session.get_history(max_messages=0),
+                metadata={"kind": "session"},
+            )
+            store.save(checkpoint)
+            return _http_json_response({"checkpoint_id": checkpoint.checkpoint_id})
+        items = [
+            summarize_checkpoint(item)
+            for item in [
+                store.load(decoded_key, raw["checkpoint_id"])
+                for raw in store.list_for_session(decoded_key)
+            ]
+            if item is not None
+        ]
+        items.sort(key=lambda row: row.get("created_at", 0), reverse=True)
+        return _http_json_response({"items": items})
+
+    def _handle_session_checkpoint_rebuild(
+        self,
+        request: WsRequest,
+        key: str,
+        checkpoint_id: str,
+    ) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+        from teai_builder.agent.checkpoint import (
+            build_rebuild_summary,
+            get_checkpoint_store,
+            summarize_checkpoint,
+        )
+
+        store = get_checkpoint_store()
+        checkpoint = store.load(decoded_key, checkpoint_id)
+        if checkpoint is None:
+            return _http_error(404, "checkpoint not found")
+        return _http_json_response(
+            {
+                "summary": build_rebuild_summary(checkpoint),
+                "checkpoint": summarize_checkpoint(checkpoint),
+            }
+        )
+
+    def _handle_session_checkpoint_restore(
+        self,
+        request: WsRequest,
+        key: str,
+        checkpoint_id: str,
+    ) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        if self.session_manager is None:
+            return _http_error(503, "session manager unavailable")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+        from teai_builder.agent.checkpoint import get_checkpoint_store
+
+        store = get_checkpoint_store()
+        restored = store.load(decoded_key, checkpoint_id)
+        if restored is None:
+            return _http_error(404, "checkpoint not found")
+        session = self.session_manager.get_or_create(decoded_key)
+        session.messages = restored.messages
+        self.session_manager.save(session)
+        return _http_json_response({"restored": True})
 
     def _handle_session_delete(self, request: WsRequest, key: str) -> Response:
         if not self.check_api_token(request):
@@ -509,10 +1010,18 @@ class GatewayHTTPHandler:
             return self._handle_commands(request)
         if got == "/api/workspaces":
             return self._handle_workspaces(connection, request)
+        if got == "/api/projects":
+            return self._handle_projects(request)
+        if got == "/api/projects/bootstrap":
+            return self._handle_projects_bootstrap(connection, request)
         if got == "/api/workspace-folders":
             return self._handle_workspace_folders(request)
         if got == "/api/webui/skills":
             return self._handle_webui_skills(request)
+        if got == "/api/webui/tools":
+            return self._handle_webui_tools(request)
+        if got == "/api/workflows":
+            return self._handle_workflows(request)
         m = re.match(r"^/api/webui/skills/([^/]+)$", got)
         if m:
             return self._handle_webui_skill_detail(request, m.group(1))
@@ -536,6 +1045,33 @@ class GatewayHTTPHandler:
             )
         )
 
+    def _handle_projects(self, request: WsRequest) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        return _http_json_response(self.workspaces.projects_payload())
+
+    def _handle_projects_bootstrap(self, connection: Any, request: WsRequest) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        if not self.workspace_controls_available(connection):
+            return _http_error(403, "workspace controls are localhost-only")
+        query = _parse_query(request.path)
+        project_name = (_query_first(query, "name") or "").strip()
+        access_mode = (_query_first(query, "access_mode") or "restricted").strip()
+        try:
+            payload = bootstrap_project(
+                project_name,
+                default_workspace=self.workspaces.default_workspace(),
+                access_mode=access_mode,
+                source_channel="websocket",
+            )
+        except ValueError as e:
+            return _http_error(400, str(e))
+        except Exception:
+            self._log.exception("failed to bootstrap project")
+            return _http_error(500, "failed to bootstrap project")
+        return _http_json_response(payload)
+
     def _handle_workspace_folders(self, request: WsRequest) -> Response:
         if not self.check_api_token(request):
             return _http_error(401, "Unauthorized")
@@ -544,7 +1080,7 @@ class GatewayHTTPHandler:
             workspace_root = Path(self.workspaces.default_workspace()).resolve()
             if workspace_root.is_dir():
                 for entry in sorted(workspace_root.iterdir(), key=lambda p: p.name.lower()):
-                    if entry.is_dir() and entry.name not in {"sessions", "cron", "memory"}:
+                    if entry.is_dir() and entry.name not in {"sessions", "cron", "memory", "webui"}:
                         folders.append({
                             "path": str(entry),
                             "name": entry.name,
@@ -561,6 +1097,37 @@ class GatewayHTTPHandler:
                 self.skills_workspace_path,
                 disabled_skills=self.disabled_skills,
             )
+        )
+
+    def _handle_webui_tools(self, request: WsRequest) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        return _http_json_response(
+            webui_tools_payload(
+                workspace_path=self.skills_workspace_path,
+                tools_config=self.tools_config,
+                bus=self.bus,
+                cron_service=self.cron_service,
+                sessions=self.session_manager,
+            )
+        )
+
+    def _handle_workflows(self, request: WsRequest) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        from teai_builder.agent.llm3.workflow_library import list_workflows
+
+        return _http_json_response(
+            {
+                "workflows": [
+                    {
+                        "workflow_id": workflow.workflow_id,
+                        "name": workflow.name,
+                        "description": workflow.description,
+                    }
+                    for workflow in list_workflows()
+                ]
+            }
         )
 
     def _handle_webui_skill_detail(self, request: WsRequest, raw_name: str) -> Response:

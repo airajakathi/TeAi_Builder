@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useClient } from "@/providers/ClientProvider";
+import { sanitizeAssistantVisibleContent } from "@/lib/assistantContent";
 import { toMediaAttachment } from "@/lib/media";
 import {
   mergeToolProgressEvents,
@@ -587,9 +588,13 @@ export function useTeaiBuilderStream(
       }
 
       const target = next[targetIndex];
+      const content = sanitizeAssistantVisibleContent(target.content + chunk);
+      if (!content && target.content.length === 0) {
+        return next;
+      }
       const merged: UIMessage = {
         ...target,
-        content: target.content + chunk,
+        content,
         isStreaming: true,
         ...turn,
       };
@@ -642,33 +647,36 @@ export function useTeaiBuilderStream(
     setMessages((prev) => {
       let next = events.length > 0 ? applyPendingStreamEvents(prev, events) : prev;
       if (finalAnswerText !== undefined) {
+        const sanitizedFinalText = sanitizeAssistantVisibleContent(finalAnswerText);
         const targetIndex =
           resolveActiveAssistantIndex(next, turn)
           ?? findStreamingAssistantIndex(next, closedAssistantStreamIdsRef.current, turn);
-          if (targetIndex !== null) {
-            const target = next[targetIndex];
+        if (targetIndex !== null) {
+          const target = next[targetIndex];
+          if (sanitizedFinalText || target.content) {
             next = replaceMessageAt(next, targetIndex, {
               ...target,
-              content: finalAnswerText,
+              content: sanitizedFinalText,
               isStreaming: true,
               ...turn,
             });
-          } else {
-            const id = crypto.randomUUID();
-            closedAssistantStreamIdsRef.current.add(id);
-            next = [
-              ...next,
-              {
-                id,
-                role: "assistant",
-                content: finalAnswerText,
-                isStreaming: true,
-                ...turn,
-                createdAt: Date.now(),
-              },
-            ];
           }
+        } else if (sanitizedFinalText) {
+          const id = crypto.randomUUID();
+          closedAssistantStreamIdsRef.current.add(id);
+          next = [
+            ...next,
+            {
+              id,
+              role: "assistant",
+              content: sanitizedFinalText,
+              isStreaming: true,
+              ...turn,
+              createdAt: Date.now(),
+            },
+          ];
         }
+      }
       if (options?.closeAnswerSegment) closeActiveAssistantStream();
       return next;
     });
@@ -941,11 +949,14 @@ export function useTeaiBuilderStream(
           buffer.current = null;
           activeAssistantRef.current = null;
           const filtered = activeId ? prev.filter((m) => m.id !== activeId) : prev;
-          const content = ev.text;
+          const content = sanitizeAssistantVisibleContent(ev.text);
           const lat =
             typeof ev.latency_ms === "number" && ev.latency_ms >= 0
               ? Math.round(ev.latency_ms)
               : undefined;
+          if (!content && !hasMedia) {
+            return filtered;
+          }
           return absorbCompleteAssistantMessage(filtered, {
             content,
             ...(hasMedia ? { media } : {}),

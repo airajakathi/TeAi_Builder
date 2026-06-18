@@ -70,12 +70,22 @@ class RuntimeModelChanged:
     model_preset: str | None
 
 
+@dataclass(frozen=True)
+class LLM3OrchestrationEvent:
+    """Normalized llm3 orchestration event bridged onto the runtime bus."""
+
+    context: RuntimeEventContext
+    event_type: str
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
 RuntimeEvent = (
     SessionTurnStarted
     | TurnRunStatusChanged
     | TurnCompleted
     | GoalStateChanged
     | RuntimeModelChanged
+    | LLM3OrchestrationEvent
 )
 RuntimeEventType = (
     type[SessionTurnStarted]
@@ -83,6 +93,7 @@ RuntimeEventType = (
     | type[TurnCompleted]
     | type[GoalStateChanged]
     | type[RuntimeModelChanged]
+    | type[LLM3OrchestrationEvent]
 )
 RuntimeEventHandler = Callable[[Any], Awaitable[None] | None]
 _HandlerEntry = tuple[RuntimeEventType | None, RuntimeEventHandler]
@@ -232,6 +243,29 @@ class RuntimeEventPublisher:
     def runtime_model_changed(self, model: str, model_preset: str | None) -> None:
         self.bus.publish_nowait(
             RuntimeModelChanged(model=model, model_preset=model_preset)
+        )
+
+    async def orchestration_event(
+        self,
+        *,
+        channel: str,
+        chat_id: str,
+        session_key: str,
+        metadata: dict[str, Any] | None,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        await self.bus.publish(
+            LLM3OrchestrationEvent(
+                context=self._context(
+                    channel=channel,
+                    chat_id=chat_id,
+                    session_key=session_key,
+                    metadata=metadata,
+                ),
+                event_type=event_type,
+                payload=dict(payload or {}),
+            )
         )
 
 

@@ -2,6 +2,7 @@ import pytest
 
 from teai_builder.bus.events import InboundMessage
 from teai_builder.bus.runtime_events import (
+    LLM3OrchestrationEvent,
     RuntimeEventBus,
     RuntimeEventContext,
     RuntimeEventPublisher,
@@ -120,3 +121,27 @@ async def test_runtime_event_publisher_consumes_turn_metadata_on_complete() -> N
     assert isinstance(second, TurnCompleted)
     assert second.latency_ms is None
     assert second.runtime is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_publisher_emits_llm3_orchestration_event() -> None:
+    bus = RuntimeEventBus()
+    seen: list[object] = []
+    publisher = RuntimeEventPublisher(bus)
+
+    bus.subscribe(seen.append)
+
+    await publisher.orchestration_event(
+        channel="websocket",
+        chat_id="chat-a",
+        session_key="websocket:chat-a",
+        metadata={"trace_id": "turn-1"},
+        event_type="execution_prepared",
+        payload={"request_id": "req-1"},
+    )
+
+    event = seen[0]
+    assert isinstance(event, LLM3OrchestrationEvent)
+    assert event.context.channel == "websocket"
+    assert event.event_type == "execution_prepared"
+    assert event.payload == {"request_id": "req-1"}

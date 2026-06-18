@@ -10,6 +10,7 @@ import {
   listSessions,
 } from "@/lib/api";
 import { hasPendingAgentActivity } from "@/lib/activity-timeline";
+import { sanitizeAssistantVisibleContent } from "@/lib/assistantContent";
 import { deriveTitle } from "@/lib/format";
 import type {
   CanvasRestoreItem,
@@ -27,11 +28,25 @@ const OLDER_HISTORY_PAGE_LIMIT = 120;
 const CHAT_CREATE_TIMEOUT_MS = 60_000;
 
 function persistedMessagesToUi(messages: UIMessage[]): UIMessage[] {
-  return messages.map((m, idx) => ({
-    ...m,
-    id: m.id ?? `hist-${idx}`,
-    createdAt: typeof m.createdAt === "number" ? m.createdAt : Date.now(),
-  }));
+  return messages.flatMap((m, idx) => {
+    const normalizedContent =
+      m.role === "assistant" && m.kind !== "trace"
+        ? sanitizeAssistantVisibleContent(m.content)
+        : m.content;
+    const normalized = {
+      ...m,
+      content: normalizedContent,
+      id: m.id ?? `hist-${idx}`,
+      createdAt: typeof m.createdAt === "number" ? m.createdAt : Date.now(),
+    };
+    const emptyAssistantReply =
+      normalized.role === "assistant"
+      && normalized.kind !== "trace"
+      && normalized.content.trim().length === 0
+      && !normalized.reasoning
+      && !normalized.media?.length;
+    return emptyAssistantReply ? [] : [normalized];
+  });
 }
 
 function hasPendingToolCallsFromThread(

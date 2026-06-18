@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from teai_builder.agent.skills import SkillsLoader
+from teai_builder.agent.skills import BUILTIN_SKILLS_DIR, SkillsLoader
 
 
 def _write_skill(
@@ -397,3 +397,16 @@ def test_get_skill_metadata_handles_yaml_types(tmp_path: Path) -> None:
     assert meta.get("always") is True
     # metadata is a parsed dict, not a JSON string
     assert isinstance(meta.get("metadata"), dict)
+
+
+def test_builtin_superpowers_builder_skill_is_discoverable(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    loader = SkillsLoader(workspace, builtin_skills_dir=BUILTIN_SKILLS_DIR)
+    names = {entry["name"] for entry in loader.list_skills(filter_unavailable=False)}
+
+    assert "superpowers-builder" in names
+    metadata = loader.get_skill_metadata("superpowers-builder")
+    assert metadata is not None
+    assert metadata.get("name") == "superpowers-builder"

@@ -28,6 +28,33 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         output: {
           manualChunks(id) {
+            if (id.includes("/src/components/settings/AppsCatalogSettings")) {
+              return "settings-apps";
+            }
+            if (id.includes("/src/components/settings/AdvancedSettingsSection")) {
+              return "settings-advanced";
+            }
+            if (id.includes("/src/components/settings/RuntimeSettingsSection")) {
+              return "settings-runtime";
+            }
+            if (id.includes("/src/components/settings/SkillsCatalogSettings")) {
+              return "settings-skills";
+            }
+            if (
+              id.includes("/src/components/settings/TokenUsageHeatmap")
+              || id.includes("/src/components/LanguageSwitcher")
+            ) {
+              return "settings-extras";
+            }
+            if (id.includes("/src/components/settings/")) {
+              return "settings-route";
+            }
+            if (id.includes("/src/components/workflows/")) {
+              return "workflows-route";
+            }
+            if (id.includes("node_modules/monaco-editor")) {
+              return "monaco-editor";
+            }
             if (id.includes("node_modules/refractor/lang/")) {
               return;
             }

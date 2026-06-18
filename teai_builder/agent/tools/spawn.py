@@ -11,6 +11,7 @@ from teai_builder.agent.tools.schema import NumberSchema, StringSchema, tool_par
 from teai_builder.security.workspace_access import current_workspace_scope
 
 if TYPE_CHECKING:
+    from teai_builder.agent.llm3.worker_runtime import WorkerRuntime
     from teai_builder.agent.subagent import SubagentManager
 
 
@@ -46,8 +47,13 @@ if TYPE_CHECKING:
 class SpawnTool(Tool, ContextAware):
     """Tool to spawn a subagent for background task execution."""
 
-    def __init__(self, manager: "SubagentManager"):
+    def __init__(
+        self,
+        manager: "SubagentManager | None" = None,
+        worker_runtime: "WorkerRuntime | None" = None,
+    ):
         self._manager = manager
+        self._worker_runtime = worker_runtime
         self._origin_channel: ContextVar[str] = ContextVar("spawn_origin_channel", default="cli")
         self._origin_chat_id: ContextVar[str] = ContextVar("spawn_origin_chat_id", default="direct")
         self._session_key: ContextVar[str] = ContextVar("spawn_session_key", default="cli:direct")
@@ -55,10 +61,17 @@ class SpawnTool(Tool, ContextAware):
             "spawn_origin_message_id",
             default=None,
         )
+        self._request_metadata: ContextVar[dict[str, Any]] = ContextVar(
+            "spawn_request_metadata",
+            default={},
+        )
 
     @classmethod
     def create(cls, ctx: Any) -> Tool:
-        return cls(manager=ctx.subagent_manager)
+        return cls(
+            manager=ctx.subagent_manager,
+            worker_runtime=getattr(ctx, "worker_runtime", None),
+        )
 
     def set_context(self, ctx: RequestContext) -> None:
         """Set the origin context for subagent announcements."""
@@ -66,6 +79,7 @@ class SpawnTool(Tool, ContextAware):
         self._origin_chat_id.set(ctx.chat_id)
         self._session_key.set(ctx.session_key or f"{ctx.channel}:{ctx.chat_id}")
         self._origin_message_id.set(ctx.message_id)
+        self._request_metadata.set(dict(ctx.metadata or {}))
 
     @property
     def name(self) -> str:
@@ -94,15 +108,61 @@ class SpawnTool(Tool, ContextAware):
         **kwargs: Any,
     ) -> str:
         """Spawn a subagent to execute the given task."""
-        running = self._manager.get_running_count()
-        limit = self._manager.max_concurrent_subagents
+        runtime = self._worker_runtime
+        manager = self._manager
+        request_metadata = dict(self._request_metadata.get() or {})
+        if request_metadata.get("_inline_subagents") and manager is not None:
+            result = await manager.run_worker(
+                task=task,
+                label=label,
+                role=role,
+                model_preset=model_preset,
+                origin_channel=self._origin_channel.get(),
+                origin_chat_id=self._origin_chat_id.get(),
+                session_key=self._session_key.get(),
+                origin_message_id=self._origin_message_id.get(),
+                temperature=temperature,
+                workspace_scope=current_workspace_scope(),
+            )
+            final_output = str(result.get("final_output") or "").strip()
+            return (
+                f"Subagent [{label or task[:30]}] completed inline.\n\n{final_output}"
+                if final_output
+                else f"Subagent [{label or task[:30]}] completed inline with no output."
+            )
+        running = runtime.get_running_count() if runtime is not None else manager.get_running_count()
+        limit = (
+            runtime.max_concurrent_workers
+            if runtime is not None
+            else manager.max_concurrent_subagents
+        )
         if running >= limit:
             return (
                 f"Cannot spawn subagent: concurrency limit reached "
                 f"({running}/{limit} running). Wait for a running subagent "
                 f"to complete before spawning a new one."
             )
-        return await self._manager.spawn(
+        if runtime is not None:
+            from teai_builder.agent.llm3.worker_runtime import WorkerTaskSpec
+
+            result = await runtime.spawn(
+                WorkerTaskSpec(
+                    task=task,
+                    label=label,
+                    role=role,
+                    model_preset=model_preset,
+                    origin_channel=self._origin_channel.get(),
+                    origin_chat_id=self._origin_chat_id.get(),
+                    session_key=self._session_key.get(),
+                    origin_message_id=self._origin_message_id.get(),
+                    temperature=temperature,
+                    workspace_scope=current_workspace_scope(),
+                    owner_turn_id=request_metadata.get("_llm3_turn_id"),
+                    owner_request_id=request_metadata.get("_llm3_request_id"),
+                )
+            )
+            return result.launch_message
+        return await manager.spawn(
             task=task,
             label=label,
             role=role,

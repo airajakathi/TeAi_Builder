@@ -1,5 +1,5 @@
 import { deriveTitle } from "@/lib/format";
-import type { ChatSummary, SidebarSortMode } from "@/lib/types";
+import type { ChatSummary, ProjectSummary, SidebarSortMode } from "@/lib/types";
 import { normalizeWorkspacePath, projectNameFromPath, sameWorkspacePath } from "@/lib/workspace";
 
 export const COLLAPSED_CHATS_VISIBLE_COUNT = 8;
@@ -11,6 +11,7 @@ export interface SessionGroup {
   kind?: "project" | "general";
   projectPath?: string;
   projectKey?: string;
+  project?: ProjectSummary | null;
   updatedAt?: string | null;
 }
 
@@ -49,7 +50,7 @@ export function groupSessions(
   const archived: ChatSummary[] = [];
   const projectBuckets = new Map<
     string,
-    { path: string; label: string; sessions: ChatSummary[]; updatedAt: string | null }
+    { path: string; label: string; project?: ProjectSummary | null; sessions: ChatSummary[]; updatedAt: string | null }
   >();
   const general: ChatSummary[] = [];
 
@@ -66,16 +67,22 @@ export function groupSessions(
     const path = scope?.project_path || "";
     if (path && !sameWorkspacePath(path, defaultWorkspacePath)) {
       const key = normalizeWorkspacePath(path);
+      const project = session.project ?? null;
       const label = options.projectNameOverrides[key]?.trim()
+        || project?.name?.trim()
         || scope?.project_name?.trim()
         || projectNameFromPath(path);
       const bucket = projectBuckets.get(key) ?? {
         path,
         label,
+        project,
         sessions: [],
         updatedAt: null,
       };
       bucket.sessions.push(session);
+      if (!bucket.project && project) {
+        bucket.project = project;
+      }
       const candidate = session.updatedAt ?? session.createdAt ?? null;
       if (isNewerDate(candidate, bucket.updatedAt)) {
         bucket.updatedAt = candidate;
@@ -102,6 +109,7 @@ export function groupSessions(
     kind: "project" as const,
     projectPath: bucket.path,
     projectKey: key,
+    project: bucket.project ?? null,
     updatedAt: bucket.updatedAt,
     sessions: sortProjectSessions(
       bucket.sessions,

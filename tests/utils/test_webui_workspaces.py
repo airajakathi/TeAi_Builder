@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from teai_builder.security.workspace_access import default_workspace_scope
 from teai_builder.session.manager import SessionManager
 from teai_builder.webui.workspaces import (
@@ -126,11 +128,11 @@ def test_webui_default_access_applies_to_unscoped_old_sessions(tmp_path, monkeyp
     )
 
     scope = controller.scope_for_session_key("websocket:old-chat")
-    new_scope = controller.scope_for_new_chat({}, controls_available=True)
 
     assert scope.project_path == default.resolve()
     assert scope.access_mode == "full"
-    assert new_scope.access_mode == "full"
+    with pytest.raises(ValueError, match="Select or create a project"):
+        controller.scope_for_new_chat({}, controls_available=True)
 
 
 def test_webui_default_access_does_not_override_explicit_session_scope(tmp_path, monkeypatch) -> None:

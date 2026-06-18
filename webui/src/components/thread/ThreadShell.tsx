@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
+import { AlertCircle, AtSign, FileSearch, GitBranch, RotateCcw, Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { CanvasPanel } from "@/components/CanvasPanel";
 import { FilePreviewPanel } from "@/components/FilePreviewPanel";
+import { WorkspaceQuickOpenDialog } from "@/components/WorkspaceQuickOpenDialog";
+import { collectCliRuns, type CliRunSummary } from "@/components/thread/AgentActivityCluster";
 import { PromptNavigator } from "@/components/thread/PromptNavigator";
 import { SessionInfoPopover } from "@/components/thread/SessionInfoPopover";
 import { ThreadComposer } from "@/components/thread/ThreadComposer";
 import { ThreadHeader } from "@/components/thread/ThreadHeader";
 import { StreamErrorNotice } from "@/components/thread/StreamErrorNotice";
 import { ThreadViewport, type ThreadViewportHandle } from "@/components/thread/ThreadViewport";
+import { Button } from "@/components/ui/button";
 import { useTeaiBuilderStream, type SendImage, type SendOptions } from "@/hooks/useTeaiBuilderStream";
 import { useSessionHistory } from "@/hooks/useSessions";
 import { fetchCliApps, fetchMcpPresets, fetchSettings, listSlashCommands } from "@/lib/api";
@@ -26,6 +30,7 @@ import {
 import { inferProviderFromModelName, providerDisplayLabel } from "@/lib/provider-brand";
 import type {
   ChatSummary,
+  ProjectSummary,
   SettingsPayload,
   SlashCommand,
   UIMessage,
@@ -34,6 +39,7 @@ import type {
 } from "@/lib/types";
 import { useCanvasContent } from "@/hooks/useCanvasContent";
 import { normalizeLegacyLongTaskMessages } from "@/lib/thread-display-compat";
+import { collectRuntimeProblems } from "@/lib/runtime-problems";
 import { scrubSubagentUiMessages } from "@/lib/subagent-channel-display";
 import { useClient } from "@/providers/ClientProvider";
 
@@ -66,6 +72,14 @@ const CANVAS_MIN_WIDTH = 360;
 const CANVAS_MAX_WIDTH = 900;
 const CANVAS_MIN_MAIN_WIDTH = 420;
 const CANVAS_CLOSE_ANIMATION_MS = 320;
+const THREAD_WORKSPACE_UI_STORAGE_PREFIX = "teai_builder.webui.threadWorkspace.v1:";
+
+type WorkspaceQuickOpenMode = "files" | "content" | "symbols" | "references" | "problems";
+
+interface ThreadWorkspaceUiState {
+  filePreviewPath: string | null;
+  workspaceQuickOpenMode: WorkspaceQuickOpenMode;
+}
 
 function clampFilePreviewWidth(width: number, maxWidth: number): number {
   return Math.min(Math.max(width, FILE_PREVIEW_MIN_WIDTH), maxWidth);
@@ -89,6 +103,62 @@ function maxCanvasWidth(containerWidth: number): number {
   );
 }
 
+function threadWorkspaceUiStorageKey(chatId: string | null): string | null {
+  return chatId ? `${THREAD_WORKSPACE_UI_STORAGE_PREFIX}${chatId}` : null;
+}
+
+function readThreadWorkspaceUiState(chatId: string | null): ThreadWorkspaceUiState | null {
+  if (typeof window === "undefined") return null;
+  const storageKey = threadWorkspaceUiStorageKey(chatId);
+  if (!storageKey) return null;
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || typeof parsed !== "object") return null;
+    const record = parsed as Partial<ThreadWorkspaceUiState>;
+    const mode = record.workspaceQuickOpenMode;
+    return {
+      filePreviewPath: typeof record.filePreviewPath === "string" && record.filePreviewPath.trim()
+        ? record.filePreviewPath
+        : null,
+      workspaceQuickOpenMode: mode === "content"
+        || mode === "symbols"
+        || mode === "references"
+        || mode === "problems"
+        ? mode
+        : "files",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistThreadWorkspaceUiState(chatId: string | null, state: ThreadWorkspaceUiState): void {
+  if (typeof window === "undefined") return;
+  const storageKey = threadWorkspaceUiStorageKey(chatId);
+  if (!storageKey) return;
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(state));
+  } catch {
+    // localStorage persistence is best-effort.
+  }
+}
+
+function displayCliArg(arg: string): string {
+  return /\s/.test(arg) ? JSON.stringify(arg) : arg;
+}
+
+function buildCliReuseDraft(run: CliRunSummary): string {
+  const command = [
+    `@${run.name}`,
+    ...(run.json ? ["--json"] : []),
+    ...run.args.map(displayCliArg),
+  ].join(" ").trim();
+  const workingDir = run.workingDir ? ` in ${run.workingDir}` : "";
+  const action = run.status === "error" ? "Rerun" : "Run";
+  return `${action} ${command}${workingDir} and inspect the result.`;
+}
+
 interface ThreadShellProps {
   session: ChatSummary | null;
   title: string;
@@ -104,6 +174,7 @@ interface ThreadShellProps {
   hostChromeTitleInset?: boolean;
   hideThemeButton?: boolean;
   hideHeader?: boolean;
+  project?: ProjectSummary | null;
   workspaceScope?: WorkspaceScopePayload | null;
   workspaceDefaultScope?: WorkspaceScopePayload | null;
   workspaceControls?: WorkspacesPayload["controls"] | null;
@@ -254,6 +325,7 @@ export function ThreadShell({
   hostChromeTitleInset = false,
   hideThemeButton = false,
   hideHeader = false,
+  project = null,
   workspaceScope = null,
   workspaceDefaultScope = null,
   workspaceControls = null,
@@ -302,6 +374,10 @@ export function ThreadShell({
   const [filePreviewPath, setFilePreviewPath] = useState<string | null>(null);
   const [filePreviewClosing, setFilePreviewClosing] = useState(false);
   const [filePreviewWidth, setFilePreviewWidth] = useState(FILE_PREVIEW_DEFAULT_WIDTH);
+  const [workspaceQuickOpenOpen, setWorkspaceQuickOpenOpen] = useState(false);
+  const [workspaceQuickOpenMode, setWorkspaceQuickOpenMode] = useState<WorkspaceQuickOpenMode>("files");
+  const [workspaceQuickOpenInitialQuery, setWorkspaceQuickOpenInitialQuery] = useState("");
+  const [composerPrefillRequest, setComposerPrefillRequest] = useState<{ id: string; text: string } | null>(null);
   const [canvasPanelOpen, setCanvasPanelOpen] = useState(false);
   const [canvasPanelClosing, setCanvasPanelClosing] = useState(false);
   const [canvasPanelWidth, setCanvasPanelWidth] = useState(CANVAS_DEFAULT_WIDTH);
@@ -344,6 +420,17 @@ export function ThreadShell({
   } = useTeaiBuilderStream(chatId, initial, hasPendingToolCalls, handleTurnEnd);
 
   const displayMessages = useMemo(() => projectWebuiThreadMessages(messages), [messages]);
+  const runtimeProblems = useMemo(
+    () => collectRuntimeProblems(displayMessages, workspaceScope?.project_path ?? null),
+    [displayMessages, workspaceScope?.project_path],
+  );
+  const latestReusableCliRun = useMemo(() => {
+    const runs = collectCliRuns(displayMessages);
+    for (let index = runs.length - 1; index >= 0; index -= 1) {
+      if (runs[index]?.status !== "running") return runs[index] ?? null;
+    }
+    return null;
+  }, [displayMessages]);
   const canvasContent = useCanvasContent(displayMessages, chatId, restoredCanvasItems);
 
   useEffect(() => {
@@ -354,14 +441,26 @@ export function ThreadShell({
     filePreviewWidthRef.current = filePreviewWidth;
   }, [filePreviewWidth]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (filePreviewCloseTimerRef.current !== null) {
       window.clearTimeout(filePreviewCloseTimerRef.current);
       filePreviewCloseTimerRef.current = null;
     }
     setFilePreviewClosing(false);
-    setFilePreviewPath(null);
-  }, [historyKey]);
+    const restored = readThreadWorkspaceUiState(chatId);
+    setFilePreviewPath(restored?.filePreviewPath ?? null);
+    setWorkspaceQuickOpenMode(restored?.workspaceQuickOpenMode ?? "files");
+    setWorkspaceQuickOpenInitialQuery("");
+    setWorkspaceQuickOpenOpen(false);
+  }, [chatId]);
+
+  useEffect(() => {
+    if (!chatId) return;
+    persistThreadWorkspaceUiState(chatId, {
+      filePreviewPath,
+      workspaceQuickOpenMode,
+    });
+  }, [chatId, filePreviewPath, workspaceQuickOpenMode]);
 
   useEffect(() => {
     return () => {
@@ -621,6 +720,30 @@ export function ThreadShell({
     setFilePreviewPath(path);
   }, [canvasPanelOpen]);
 
+  const handleOpenWorkspaceQuickOpen = useCallback((mode: WorkspaceQuickOpenMode = "files", initialQuery: string = "") => {
+    if (!historyKey) return;
+    setWorkspaceQuickOpenMode(mode);
+    setWorkspaceQuickOpenInitialQuery(initialQuery);
+    setWorkspaceQuickOpenOpen(true);
+  }, [historyKey]);
+
+  const handleGoToDefinition = useCallback((request: { symbol: string; sourcePath: string }) => {
+    if (!historyKey) return;
+    handleOpenWorkspaceQuickOpen("symbols", request.symbol);
+  }, [handleOpenWorkspaceQuickOpen, historyKey]);
+
+  const handleFindReferences = useCallback((request: { symbol: string; sourcePath: string }) => {
+    if (!historyKey) return;
+    handleOpenWorkspaceQuickOpen("references", request.symbol);
+  }, [handleOpenWorkspaceQuickOpen, historyKey]);
+
+  const handleReuseCliRun = useCallback((run: CliRunSummary) => {
+    setComposerPrefillRequest({
+      id: `${Date.now()}-${run.key}`,
+      text: buildCliReuseDraft(run),
+    });
+  }, []);
+
   const handleCloseFilePreview = useCallback(() => {
     if (!filePreviewPath || filePreviewClosing) return;
     setFilePreviewClosing(true);
@@ -630,6 +753,48 @@ export function ThreadShell({
       setFilePreviewClosing(false);
     }, FILE_PREVIEW_CLOSE_ANIMATION_MS);
   }, [filePreviewClosing, filePreviewPath]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (!historyKey || event.defaultPrevented) return;
+      const plainCommandP =
+        (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey;
+      if (plainCommandP && event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        handleOpenWorkspaceQuickOpen("files");
+        return;
+      }
+      const contentSearchShortcut =
+        (event.metaKey || event.ctrlKey) && !event.altKey && event.shiftKey;
+      if (contentSearchShortcut && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        handleOpenWorkspaceQuickOpen("content");
+        return;
+      }
+      const symbolSearchShortcut =
+        (event.metaKey || event.ctrlKey) && event.altKey && !event.shiftKey;
+      if (symbolSearchShortcut && event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        handleOpenWorkspaceQuickOpen("symbols");
+        return;
+      }
+      const referenceSearchShortcut =
+        (event.metaKey || event.ctrlKey) && event.altKey && !event.shiftKey;
+      if (referenceSearchShortcut && event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        handleOpenWorkspaceQuickOpen("references");
+        return;
+      }
+      const problemsShortcut =
+        (event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey;
+      if (!problemsShortcut || event.key.toLowerCase() !== "m") return;
+      event.preventDefault();
+      handleOpenWorkspaceQuickOpen("problems");
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleOpenWorkspaceQuickOpen, historyKey]);
 
   const handleToggleCanvasPanel = useCallback(() => {
     if (canvasPanelOpen) {
@@ -818,6 +983,7 @@ export function ThreadShell({
           onWorkspaceScopeChange={onWorkspaceScopeChange}
           pendingQueueKey={chatId}
           authToken={token}
+          prefillRequest={composerPrefillRequest}
         />
       ) : (
         <ThreadComposer
@@ -884,10 +1050,92 @@ export function ThreadShell({
       onJumpToPrompt={(promptId) => viewportRef.current?.jumpToUserPrompt(promptId)}
     />
   ) : undefined;
+  const quickOpenAction = historyKey ? (
+    <>
+      {latestReusableCliRun ? (
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={t("thread.header.reuseLastCliRun", { defaultValue: "Reuse last CLI run" })}
+          title={t("thread.header.reuseLastCliRunTitle", {
+            name: latestReusableCliRun.name,
+            defaultValue: "Reuse last CLI run (@{{name}})",
+          })}
+          onClick={() => handleReuseCliRun(latestReusableCliRun)}
+          className="host-no-drag h-8 w-8 rounded-full text-muted-foreground/85 hover:bg-accent/40 hover:text-foreground"
+          data-testid="thread-reuse-last-cli-run"
+        >
+          <RotateCcw className="h-4 w-4" />
+        </Button>
+      ) : null}
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label={t("workspaceQuickOpen.aria", { defaultValue: "Quick open files" })}
+        title={t("workspaceQuickOpen.shortcut", { defaultValue: "Quick open files (Ctrl+P)" })}
+        onClick={() => handleOpenWorkspaceQuickOpen("files")}
+        className="host-no-drag h-8 w-8 rounded-full text-muted-foreground/85 hover:bg-accent/40 hover:text-foreground"
+      >
+        <FileSearch className="h-4 w-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label={t("workspaceQuickOpen.contentAria", { defaultValue: "Search workspace contents" })}
+        title={t("workspaceQuickOpen.contentShortcut", { defaultValue: "Search contents (Ctrl+Shift+F)" })}
+        onClick={() => handleOpenWorkspaceQuickOpen("content")}
+        className="host-no-drag h-8 w-8 rounded-full text-muted-foreground/85 hover:bg-accent/40 hover:text-foreground"
+      >
+        <Search className="h-4 w-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label={t("workspaceQuickOpen.symbolAria", { defaultValue: "Search workspace symbols" })}
+        title={t("workspaceQuickOpen.symbolShortcut", { defaultValue: "Search symbols (Ctrl+Alt+O)" })}
+        onClick={() => handleOpenWorkspaceQuickOpen("symbols")}
+        className="host-no-drag h-8 w-8 rounded-full text-muted-foreground/85 hover:bg-accent/40 hover:text-foreground"
+      >
+        <AtSign className="h-4 w-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label={t("workspaceQuickOpen.referenceAria", { defaultValue: "Search symbol references" })}
+        title={t("workspaceQuickOpen.referenceShortcut", { defaultValue: "Search references (Ctrl+Alt+R)" })}
+        onClick={() => handleOpenWorkspaceQuickOpen("references")}
+        className="host-no-drag h-8 w-8 rounded-full text-muted-foreground/85 hover:bg-accent/40 hover:text-foreground"
+      >
+        <GitBranch className="h-4 w-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label={t("workspaceQuickOpen.problemAria", { defaultValue: "Search workspace problems" })}
+        title={t("workspaceQuickOpen.problemShortcut", { defaultValue: "Show problems (Ctrl+Shift+M)" })}
+        onClick={() => handleOpenWorkspaceQuickOpen("problems")}
+        className="host-no-drag h-8 w-8 rounded-full text-muted-foreground/85 hover:bg-accent/40 hover:text-foreground"
+      >
+        <AlertCircle className="h-4 w-4" />
+      </Button>
+    </>
+  ) : undefined;
 
   return (
     <section ref={shellRef} className="relative flex min-h-0 flex-1 overflow-hidden">
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+        {historyKey ? (
+          <WorkspaceQuickOpenDialog
+            open={workspaceQuickOpenOpen}
+            token={token}
+            sessionKey={historyKey}
+            runtimeProblems={runtimeProblems}
+            initialMode={workspaceQuickOpenMode}
+            initialQuery={workspaceQuickOpenInitialQuery}
+            onOpenChange={setWorkspaceQuickOpenOpen}
+            onSelect={handleOpenFilePreview}
+          />
+        ) : null}
         {!hideHeader ? (
           <ThreadHeader
             title={title}
@@ -898,8 +1146,10 @@ export function ThreadShell({
             hostChromeTitleInset={hostChromeTitleInset}
             hideThemeButton={hideThemeButton}
             minimal={!session && !loading}
+            quickOpenAction={quickOpenAction}
             promptNavigatorAction={promptNavigatorAction}
             sessionInfoAction={sessionInfoAction}
+            project={project}
             canvasOpen={canvasPanelOpen}
             canvasHasContent={canvasContent.hasContent}
             onToggleCanvas={session ? handleToggleCanvasPanel : undefined}
@@ -923,16 +1173,20 @@ export function ThreadShell({
           onLoadOlder={loadOlder}
           onOpenFilePreview={historyKey ? handleOpenFilePreview : undefined}
           onForkFromMessage={onForkChat ? handleForkFromMessage : undefined}
+          onReuseCliRun={historyKey ? handleReuseCliRun : undefined}
         />
       </div>
       {filePreviewPath && historyKey ? (
         <FilePreviewPanel
+          client={client}
           sessionKey={historyKey}
           path={filePreviewPath}
           token={token}
           desktopWidth={filePreviewWidth}
           isClosing={filePreviewClosing}
           onResizeStart={handleFilePreviewResizeStart}
+          onGoToDefinition={handleGoToDefinition}
+          onFindReferences={handleFindReferences}
           onClose={handleCloseFilePreview}
         />
       ) : null}

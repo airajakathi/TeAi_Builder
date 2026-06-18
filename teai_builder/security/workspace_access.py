@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from loguru import logger
+
 WorkspaceAccessMode = Literal["restricted", "full"]
 WORKSPACE_SCOPE_METADATA_KEY = "workspace_scope"
 _ACCESS_MODES = {"restricted", "full"}
@@ -48,6 +50,9 @@ class WorkspaceSandboxStatus:
     enforced: bool
     provider: str
     provider_label: str
+    exec_backend: str
+    exec_backend_available: bool
+    exec_backend_required: bool
     summary: str
 
     def as_dict(self) -> dict[str, object]:
@@ -58,6 +63,9 @@ class WorkspaceSandboxStatus:
             "enforced": self.enforced,
             "provider": self.provider,
             "provider_label": self.provider_label,
+            "exec_backend": self.exec_backend,
+            "exec_backend_available": self.exec_backend_available,
+            "exec_backend_required": self.exec_backend_required,
             "summary": self.summary,
         }
 
@@ -71,16 +79,26 @@ class WorkspaceScope:
     restrict_to_workspace: bool
     sandbox_status: WorkspaceSandboxStatus
     source_channel: str | None = None
+    project_name_override: str | None = None
 
     @property
     def project_name(self) -> str:
+        if isinstance(self.project_name_override, str):
+            cleaned = self.project_name_override.strip()
+            if cleaned:
+                return cleaned
         return self.project_path.name or str(self.project_path)
 
     def metadata(self) -> dict[str, str]:
-        return {
+        data = {
             "project_path": str(self.project_path),
             "access_mode": self.access_mode,
         }
+        if isinstance(self.project_name_override, str):
+            cleaned = self.project_name_override.strip()
+            if cleaned:
+                data["project_name"] = cleaned
+        return data
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -112,6 +130,8 @@ class WorkspaceScopeResolver:
 
     default_workspace: str | Path
     default_restrict_to_workspace: bool
+    exec_sandbox_backend: str = ""
+    exec_sandbox_strict: bool = True
     scoped_channel: str = "websocket"
 
     @property
@@ -122,6 +142,8 @@ class WorkspaceScopeResolver:
         return default_workspace_scope(
             self.default_workspace,
             self.default_restrict_to_workspace,
+            sandbox_backend=self.exec_sandbox_backend,
+            strict_execution=self.exec_sandbox_strict,
         )
 
     def for_message(
@@ -167,6 +189,8 @@ def workspace_sandbox_status(
     *,
     restrict_to_workspace: bool,
     workspace: str | Path,
+    sandbox_backend: str = "",
+    strict_execution: bool = True,
     environ: dict[str, str] | None = None,
 ) -> WorkspaceSandboxStatus:
     """Return how workspace restriction is enforced in the current host."""
@@ -181,6 +205,9 @@ def workspace_sandbox_status(
             enforced=False,
             provider="none",
             provider_label=_provider_label("none"),
+            exec_backend="",
+            exec_backend_available=False,
+            exec_backend_required=False,
             summary="Workspace restriction is disabled.",
         )
 
@@ -193,8 +220,48 @@ def workspace_sandbox_status(
             enforced=True,
             provider=provider,
             provider_label=label,
+            exec_backend=sandbox_backend,
+            exec_backend_available=bool(sandbox_backend),
+            exec_backend_required=bool(sandbox_backend and strict_execution),
             summary=f"Workspace restriction is system-enforced by {label}.",
         )
+
+    if sandbox_backend:
+        from teai_builder.agent.tools.sandbox import sandbox_backend_status
+
+        backend = sandbox_backend_status(sandbox_backend)
+        if backend.available:
+            return WorkspaceSandboxStatus(
+                restrict_to_workspace=True,
+                workspace_root=workspace_root,
+                level="process",
+                enforced=True,
+                provider=backend.provider,
+                provider_label=backend.provider_label,
+                exec_backend=sandbox_backend,
+                exec_backend_available=True,
+                exec_backend_required=bool(strict_execution),
+                summary=(
+                    f"Workspace restriction is process-enforced for exec commands by "
+                    f"{backend.provider_label}; application-level guards remain for non-exec tools."
+                ),
+            )
+        if strict_execution:
+            return WorkspaceSandboxStatus(
+                restrict_to_workspace=True,
+                workspace_root=workspace_root,
+                level="degraded",
+                enforced=False,
+                provider="none",
+                provider_label=_provider_label("none"),
+                exec_backend=sandbox_backend,
+                exec_backend_available=False,
+                exec_backend_required=True,
+                summary=(
+                    f"Configured exec sandbox {backend.provider_label} is unavailable; "
+                    "strict sandbox mode will block exec commands."
+                ),
+            )
 
     return WorkspaceSandboxStatus(
         restrict_to_workspace=True,
@@ -203,7 +270,17 @@ def workspace_sandbox_status(
         enforced=False,
         provider="none",
         provider_label=_provider_label("none"),
-        summary="Workspace restriction uses teai_builder application-level guards.",
+        exec_backend=sandbox_backend,
+        exec_backend_available=False,
+        exec_backend_required=bool(sandbox_backend and strict_execution),
+        summary=(
+            "Workspace restriction uses teai_builder application-level guards."
+            if not sandbox_backend
+            else (
+                f"Configured exec sandbox {_provider_label(sandbox_backend)} is unavailable; "
+                "teai_builder is falling back to application-level guards."
+            )
+        ),
     )
 
 
@@ -216,6 +293,9 @@ def build_workspace_scope(
     access_mode: str,
     *,
     source_channel: str | None = None,
+    project_name: str | None = None,
+    sandbox_backend: str = "",
+    strict_execution: bool = True,
 ) -> WorkspaceScope:
     mode = _normalize_access_mode(access_mode)
     root = Path(project_path).expanduser().resolve(strict=False)
@@ -227,8 +307,11 @@ def build_workspace_scope(
         sandbox_status=workspace_sandbox_status(
             restrict_to_workspace=restrict,
             workspace=root,
+            sandbox_backend=sandbox_backend,
+            strict_execution=strict_execution,
         ),
         source_channel=source_channel,
+        project_name_override=project_name,
     )
 
 
@@ -237,11 +320,15 @@ def default_workspace_scope(
     restrict_to_workspace: bool,
     *,
     source_channel: str | None = None,
+    sandbox_backend: str = "",
+    strict_execution: bool = True,
 ) -> WorkspaceScope:
     return build_workspace_scope(
         workspace,
         default_access_mode(restrict_to_workspace),
         source_channel=source_channel,
+        sandbox_backend=sandbox_backend,
+        strict_execution=strict_execution,
     )
 
 
@@ -251,6 +338,8 @@ def validate_workspace_scope_payload(
     default_workspace: str | Path,
     default_restrict_to_workspace: bool,
     source_channel: str | None = None,
+    sandbox_backend: str = "",
+    strict_execution: bool = True,
 ) -> WorkspaceScope:
     """Validate a client-requested workspace scope."""
     if raw is None:
@@ -258,6 +347,8 @@ def validate_workspace_scope_payload(
             default_workspace,
             default_restrict_to_workspace,
             source_channel=source_channel,
+            sandbox_backend=sandbox_backend,
+            strict_execution=strict_execution,
         )
     if not isinstance(raw, dict):
         raise WorkspaceScopeError("workspace_scope must be an object")
@@ -282,7 +373,17 @@ def validate_workspace_scope_payload(
         raw_mode = default_access_mode(default_restrict_to_workspace)
     if not isinstance(raw_mode, str):
         raise WorkspaceScopeError("access_mode must be a string")
-    return build_workspace_scope(project, raw_mode, source_channel=source_channel)
+    raw_name = raw.get("project_name")
+    if raw_name is not None and not isinstance(raw_name, str):
+        raise WorkspaceScopeError("project_name must be a string")
+    return build_workspace_scope(
+        project,
+        raw_mode,
+        source_channel=source_channel,
+        project_name=raw_name,
+        sandbox_backend=sandbox_backend,
+        strict_execution=strict_execution,
+    )
 
 
 def workspace_scope_from_metadata(
@@ -291,13 +392,17 @@ def workspace_scope_from_metadata(
     default_workspace: str | Path,
     default_restrict_to_workspace: bool,
     source_channel: str | None = None,
+    sandbox_backend: str = "",
+    strict_execution: bool = True,
 ) -> WorkspaceScope:
-    """Resolve persisted metadata, falling back safely for old or stale sessions."""
+    """Resolve persisted metadata, falling back to a safe restricted default when invalid."""
     if not isinstance(metadata, dict):
         return default_workspace_scope(
             default_workspace,
             default_restrict_to_workspace,
             source_channel=source_channel,
+            sandbox_backend=sandbox_backend,
+            strict_execution=strict_execution,
         )
     try:
         return validate_workspace_scope_payload(
@@ -305,12 +410,17 @@ def workspace_scope_from_metadata(
             default_workspace=default_workspace,
             default_restrict_to_workspace=default_restrict_to_workspace,
             source_channel=source_channel,
+            sandbox_backend=sandbox_backend,
+            strict_execution=strict_execution,
         )
-    except WorkspaceScopeError:
+    except WorkspaceScopeError as e:
+        logger.warning("invalid persisted workspace scope metadata; using restricted default: {}", e)
         return default_workspace_scope(
             default_workspace,
-            default_restrict_to_workspace,
+            True,
             source_channel=source_channel,
+            sandbox_backend=sandbox_backend,
+            strict_execution=strict_execution,
         )
 
 
@@ -321,6 +431,8 @@ def resolve_effective_workspace_scope(
     default_workspace: str | Path,
     default_restrict_to_workspace: bool,
     source_channel: str | None = None,
+    sandbox_backend: str = "",
+    strict_execution: bool = True,
 ) -> WorkspaceScope:
     if isinstance(message_metadata, dict) and WORKSPACE_SCOPE_METADATA_KEY in message_metadata:
         return workspace_scope_from_metadata(
@@ -328,12 +440,16 @@ def resolve_effective_workspace_scope(
             default_workspace=default_workspace,
             default_restrict_to_workspace=default_restrict_to_workspace,
             source_channel=source_channel,
+            sandbox_backend=sandbox_backend,
+            strict_execution=strict_execution,
         )
     return workspace_scope_from_metadata(
         session_metadata,
         default_workspace=default_workspace,
         default_restrict_to_workspace=default_restrict_to_workspace,
         source_channel=source_channel,
+        sandbox_backend=sandbox_backend,
+        strict_execution=strict_execution,
     )
 
 

@@ -172,6 +172,30 @@ def test_recent_history_injection_is_session_scoped(tmp_path) -> None:
     assert "legacy entry without session" not in prompt
 
 
+def test_project_scoped_prompt_reads_project_memory_not_workspace_memory(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    builder = ContextBuilder(workspace)
+    project = workspace / "projects" / "alpha"
+    project.mkdir(parents=True)
+
+    builder.memory.write_memory("workspace fact")
+    builder.memory.append_history("workspace history", session_key="websocket:general")
+
+    project_store = builder.memory.for_workspace(project)
+    project_store.write_memory("project fact")
+    project_store.append_history("project history", session_key="websocket:alpha")
+
+    prompt = builder.build_system_prompt(
+        workspace=project,
+        session_key="websocket:alpha",
+    )
+
+    assert "project fact" in prompt
+    assert "project history" in prompt
+    assert "workspace fact" not in prompt
+    assert "workspace history" not in prompt
+
+
 def test_recent_history_injection_unified_excludes_cron_internals(tmp_path) -> None:
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)

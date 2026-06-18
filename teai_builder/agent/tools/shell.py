@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import shutil
 import sys
+import tempfile
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +28,7 @@ from teai_builder.agent.tools.exec_session import (
     clamp_session_int,
     format_session_poll,
 )
-from teai_builder.agent.tools.sandbox import wrap_command
+from teai_builder.agent.tools.sandbox import sandbox_backend_status, wrap_command
 from teai_builder.agent.tools.schema import (
     BooleanSchema,
     IntegerSchema,
@@ -58,6 +60,7 @@ class ExecToolConfig(Base):
     path_prepend: str = ""
     path_append: str = ""
     sandbox: str = ""
+    strict_sandbox: bool = True
     allowed_env_keys: list[str] = Field(default_factory=list)
     allow_patterns: list[str] = Field(default_factory=list)
     deny_patterns: list[str] = Field(default_factory=list)
@@ -151,6 +154,7 @@ class ExecTool(Tool):
             restrict_to_workspace=ctx.config.restrict_to_workspace,
             webui_allow_local_service_access=ctx.config.webui_allow_local_service_access,
             sandbox=cfg.sandbox,
+            strict_sandbox=cfg.strict_sandbox,
             path_prepend=cfg.path_prepend,
             path_append=cfg.path_append,
             allowed_env_keys=cfg.allowed_env_keys,
@@ -168,6 +172,7 @@ class ExecTool(Tool):
         webui_allow_local_service_access: bool = True,
         allow_local_preview_access: bool | None = None,
         sandbox: str = "",
+        strict_sandbox: bool = True,
         path_prepend: str = "",
         path_append: str = "",
         allowed_env_keys: list[str] | None = None,
@@ -176,6 +181,7 @@ class ExecTool(Tool):
         self.timeout = timeout
         self.working_dir = working_dir
         self.sandbox = sandbox
+        self.strict_sandbox = strict_sandbox
         self.deny_patterns = (deny_patterns or []) + [
             r"\brm\s+-[rf]{1,2}\b",          # rm -r, rm -rf, rm -fr
             r"\bdel\s+/[fq]\b",              # del /f, del /q
@@ -365,10 +371,18 @@ class ExecTool(Tool):
         shell: str | None = None,
         login: bool | None = None,
     ) -> _PreparedCommand | str:
+        backend = None
+        if self.sandbox:
+            try:
+                backend = sandbox_backend_status(self.sandbox)
+            except ValueError as exc:
+                return f"Error: {exc}"
         access = current_tool_workspace(
             self.working_dir,
             restrict_to_workspace=self.restrict_to_workspace,
-            sandbox_restricts_workspace=bool(self.sandbox),
+            sandbox_restricts_workspace=bool(
+                backend is not None and backend.available
+            ),
         )
         workspace_root = str(access.project_path) if access.project_path is not None else self.working_dir
         cwd = working_dir or workspace_root or os.getcwd()
@@ -402,10 +416,17 @@ class ExecTool(Tool):
             return guard_error
 
         if self.sandbox:
-            if _IS_WINDOWS:
+            if not backend.available:
+                if self.strict_sandbox:
+                    return (
+                        f"Error: sandbox backend '{self.sandbox}' is unavailable on this host; "
+                        "command execution is blocked because strict_sandbox is enabled."
+                        + _WORKSPACE_BOUNDARY_NOTE
+                    )
                 logger.warning(
-                    "Sandbox '{}' is not supported on Windows; running unsandboxed",
+                    "Sandbox '{}' unavailable ({}); running with application-level guards only",
                     self.sandbox,
+                    backend.summary,
                 )
             else:
                 workspace = workspace_root or cwd
@@ -414,6 +435,41 @@ class ExecTool(Tool):
 
         effective_timeout = self._resolve_timeout(timeout)
         env = self._build_env()
+        runtime_root = workspace_root or cwd
+        if not _IS_WINDOWS and runtime_root:
+            home = env.get("HOME") or ""
+            if not home or not os.access(home, os.W_OK):
+                runtime_home = Path(runtime_root).resolve() / ".teai_builder-home"
+                runtime_dirs = {
+                    "HOME": str(runtime_home),
+                    "XDG_CONFIG_HOME": str(runtime_home / ".config"),
+                    "XDG_CACHE_HOME": str(runtime_home / ".cache"),
+                    "XDG_STATE_HOME": str(runtime_home / ".local" / "state"),
+                    "NPM_CONFIG_CACHE": str(runtime_home / ".npm"),
+                    "BUN_INSTALL_CACHE_DIR": str(runtime_home / ".bun"),
+                    "EXPO_NO_TELEMETRY": "1",
+                }
+                try:
+                    for value in runtime_dirs.values():
+                        if value in {"1", "0"}:
+                            continue
+                        Path(value).mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    digest = hashlib.sha1(str(runtime_root).encode("utf-8")).hexdigest()[:12]
+                    runtime_home = Path(tempfile.gettempdir()) / f"teai_builder-shell-{digest}"
+                    runtime_dirs.update({
+                        "HOME": str(runtime_home),
+                        "XDG_CONFIG_HOME": str(runtime_home / ".config"),
+                        "XDG_CACHE_HOME": str(runtime_home / ".cache"),
+                        "XDG_STATE_HOME": str(runtime_home / ".local" / "state"),
+                        "NPM_CONFIG_CACHE": str(runtime_home / ".npm"),
+                        "BUN_INSTALL_CACHE_DIR": str(runtime_home / ".bun"),
+                    })
+                    for value in runtime_dirs.values():
+                        if value in {"1", "0"}:
+                            continue
+                        Path(value).mkdir(parents=True, exist_ok=True)
+                env.update(runtime_dirs)
 
         if self.path_prepend or self.path_append:
             if _IS_WINDOWS:
@@ -645,10 +701,13 @@ class ExecTool(Tool):
                 if self._is_benign_device_path(str(p)):
                     continue
 
-                media_path = get_media_dir().resolve()
+                try:
+                    media_path = get_media_dir().resolve()
+                except OSError:
+                    media_path = None
                 if p.is_absolute() and not (
                     is_path_within(p, cwd_path)
-                    or is_path_within(p, media_path)
+                    or (media_path is not None and is_path_within(p, media_path))
                 ):
                     return (
                         "Error: Command blocked by safety guard (path outside working dir)"

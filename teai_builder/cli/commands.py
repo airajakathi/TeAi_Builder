@@ -526,7 +526,7 @@ def onboard(
         console.print("     Get one at: https://openrouter.ai/keys")
         console.print(f"  2. Chat: [cyan]{agent_cmd}[/cyan]")
     console.print(
-        "\n[dim]Want Telegram/WhatsApp? See: https://github.com/airajakathi/TeAi_Builder#-chat-apps[/dim]"
+        "\n[dim]Want Telegram/WhatsApp? See the README's chat apps section.[/dim]"
     )
 
 
@@ -578,16 +578,48 @@ def _model_display(config: Config) -> tuple[str, str]:
 
 def _load_runtime_config(config: str | None = None, workspace: str | None = None) -> Config:
     """Load config and optionally override the active workspace."""
-    from teai_builder.config.loader import load_config, resolve_config_env_vars, set_config_path
+    from teai_builder.config.loader import (
+        get_config_path,
+        load_config,
+        resolve_config_env_vars,
+        set_config_path,
+    )
 
     config_path = None
+    config_notice: str | None = None
     if config:
         config_path = Path(config).expanduser().resolve()
         if not config_path.exists():
             console.print(f"[red]Error: Config file not found: {config_path}[/red]")
             raise typer.Exit(1)
         set_config_path(config_path)
-        console.print(f"[dim]Using config: {config_path}[/dim]")
+        config_notice = f"Using config: {config_path}"
+    elif workspace:
+        workspace_path = Path(workspace).expanduser().resolve()
+        candidates = (
+            workspace_path / "instance" / "config.json",
+            workspace_path / "config.json",
+            workspace_path.parent / "config.json" if workspace_path.name == "workspace" else None,
+        )
+        config_path = next((candidate for candidate in candidates if candidate and candidate.exists()), None)
+        if config_path is not None:
+            set_config_path(config_path)
+            config_notice = f"Using config: {config_path}"
+        else:
+            config_notice = (
+                "No instance config found near workspace; "
+                f"using default config: {get_config_path().expanduser().resolve()}"
+            )
+    else:
+        candidate = Path.cwd() / "instance" / "config.json"
+        if candidate.parent.is_dir():
+            config_path = candidate
+            set_config_path(config_path)
+            if candidate.exists():
+                config_notice = f"Using config: {config_path}"
+    if config_notice is None:
+        config_notice = f"Using default config: {get_config_path().expanduser().resolve()}"
+    console.print(f"[dim]{config_notice}[/dim]")
 
     try:
         loaded = resolve_config_env_vars(load_config(config_path))
@@ -597,6 +629,10 @@ def _load_runtime_config(config: str | None = None, workspace: str | None = None
     _warn_deprecated_config_keys(config_path)
     if workspace:
         loaded.agents.defaults.workspace = workspace
+    elif config_path and config_path.parent.name == "instance":
+        if loaded.agents.defaults.workspace == Config().agents.defaults.workspace:
+            loaded.agents.defaults.workspace = str(config_path.parent / "workspace")
+    console.print(f"[dim]Using workspace: {loaded.workspace_path}[/dim]")
     return loaded
 
 
@@ -616,6 +652,21 @@ def _warn_deprecated_config_keys(config_path: Path | None) -> None:
             "[dim]Hint: `memoryWindow` in your config is no longer used "
             "and can be safely removed.[/dim]"
         )
+
+
+def _print_reliability_startup_notice(status: dict[str, Any]) -> None:
+    """Show pending crash summaries recovered at startup."""
+    pending = status.get("pending_crash_reports") or []
+    if not pending:
+        return
+    console.print(
+        f"[yellow]Recovered {len(pending)} crash report(s) from the previous run.[/yellow]"
+    )
+    for report in pending[:3]:
+        component = report.get("component") or "unknown"
+        error_type = report.get("error_type") or "UnknownError"
+        message = report.get("error_message") or ""
+        console.print(f"[yellow]- {component}: {error_type} {message}[/yellow]")
 
 
 def _migrate_cron_store(config: "Config") -> None:
@@ -659,6 +710,12 @@ def serve(
     from teai_builder.providers.audio_generation import audio_gen_provider_configs
     from teai_builder.providers.image_generation import image_gen_provider_configs
     from teai_builder.providers.video_generation import video_gen_provider_configs
+    from teai_builder.reliability import (
+        emit_process_stop,
+        record_handled_exception,
+        reliability_status_as_dict,
+        setup_runtime_reliability,
+    )
     from teai_builder.session.manager import SessionManager
 
     if verbose:
@@ -667,6 +724,8 @@ def serve(
         logger.disable("teai_builder")
 
     runtime_config = _load_runtime_config(config, workspace)
+    reliability = setup_runtime_reliability(runtime_config, component="api")
+    _print_reliability_startup_notice(reliability_status_as_dict(reliability))
     api_cfg = runtime_config.api
     host = host if host is not None else api_cfg.host
     port = port if port is not None else api_cfg.port
@@ -710,7 +769,17 @@ def serve(
     api_app.on_startup.append(on_startup)
     api_app.on_cleanup.append(on_cleanup)
 
-    web.run_app(api_app, host=host, port=port, print=lambda msg: logger.info(msg))
+    try:
+        web.run_app(api_app, host=host, port=port, print=lambda msg: logger.info(msg))
+    except KeyboardInterrupt:
+        emit_process_stop(runtime_config, component="api", reason="keyboard_interrupt")
+        raise
+    except Exception as exc:
+        record_handled_exception(runtime_config, component="api", exc=exc, source="serve")
+        emit_process_stop(runtime_config, component="api", reason="crash")
+        raise
+    else:
+        emit_process_stop(runtime_config, component="api", reason="clean_exit")
 
 
 # ============================================================================
@@ -767,12 +836,21 @@ def _run_gateway(
     from teai_builder.providers.factory import build_provider_snapshot, load_provider_snapshot
     from teai_builder.providers.image_generation import image_gen_provider_configs
     from teai_builder.providers.video_generation import video_gen_provider_configs
+    from teai_builder.reliability import (
+        emit_process_stop,
+        install_asyncio_exception_handler,
+        record_handled_exception,
+        reliability_status_as_dict,
+        setup_runtime_reliability,
+    )
     from teai_builder.session.manager import SessionManager
     from teai_builder.session.webui_turns import WebuiTurnCoordinator
     from teai_builder.webui.token_usage import TokenUsageHook
 
     port = port if port is not None else config.gateway.port
 
+    reliability = setup_runtime_reliability(config, component="gateway")
+    _print_reliability_startup_notice(reliability_status_as_dict(reliability))
     console.print(f"{__logo__} Starting teai_builder gateway version {__version__} on port {port}...")
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
@@ -837,6 +915,21 @@ def _run_gateway(
         sessions=session_manager,
         schedule_background=lambda coro: agent._schedule_background(coro),
     ).subscribe(runtime_events)
+
+    # The gateway is the documented WebUI entrypoint, so make the built-in
+    # WebSocket/WebUI transport available even for fresh installs with no
+    # channel config yet.
+    extras = getattr(config.channels, "__pydantic_extra__", None)
+    if extras is None:
+        config.channels.__pydantic_extra__ = {}
+        extras = config.channels.__pydantic_extra__
+    websocket_section = extras.get("websocket")
+    if websocket_section is None:
+        extras["websocket"] = {"enabled": True}
+    elif isinstance(websocket_section, dict):
+        websocket_section.setdefault("enabled", True)
+    elif not hasattr(websocket_section, "enabled"):
+        setattr(websocket_section, "enabled", True)
 
     from teai_builder.bus.events import OutboundMessage
     from teai_builder.session.keys import session_key_for_channel
@@ -1162,6 +1255,8 @@ def _run_gateway(
             console.print(f"[yellow]Could not open browser ({e}); visit {open_browser_url}[/yellow]")
 
     async def run():
+        install_asyncio_exception_handler(asyncio.get_running_loop(), config, component="gateway")
+        exit_reason = "clean_exit"
         try:
             await cron.start()
             tasks = [
@@ -1174,10 +1269,13 @@ def _run_gateway(
                 tasks.append(_open_browser_when_ready())
             await asyncio.gather(*tasks)
         except KeyboardInterrupt:
+            exit_reason = "keyboard_interrupt"
             console.print("\nShutting down...")
-        except Exception:
+        except Exception as exc:
             import traceback
 
+            exit_reason = "crash"
+            record_handled_exception(config, component="gateway", exc=exc, source="gateway.run")
             console.print("\n[red]Error: Gateway crashed unexpectedly[/red]")
             console.print(traceback.format_exc())
         finally:
@@ -1191,6 +1289,7 @@ def _run_gateway(
             flushed = agent.sessions.flush_all()
             if flushed:
                 logger.info("Shutdown: flushed {} session(s) to disk", flushed)
+            emit_process_stop(config, component="gateway", reason=exit_reason)
 
     asyncio.run(run())
 
@@ -1217,8 +1316,17 @@ def agent(
     from teai_builder.providers.audio_generation import audio_gen_provider_configs
     from teai_builder.providers.image_generation import image_gen_provider_configs
     from teai_builder.providers.video_generation import video_gen_provider_configs
+    from teai_builder.reliability import (
+        emit_process_stop,
+        install_asyncio_exception_handler,
+        record_handled_exception,
+        reliability_status_as_dict,
+        setup_runtime_reliability,
+    )
 
     config = _load_runtime_config(config, workspace)
+    reliability = setup_runtime_reliability(config, component="agent")
+    _print_reliability_startup_notice(reliability_status_as_dict(reliability))
     sync_workspace_templates(config.workspace_path)
 
     bus = MessageBus()
@@ -1288,6 +1396,7 @@ def agent(
     if message:
         # Single message mode — direct call, no bus needed
         async def run_once():
+            install_asyncio_exception_handler(asyncio.get_running_loop(), config, component="agent")
             renderer = StreamRenderer(
                 render_markdown=markdown,
                 bot_name=config.agents.defaults.bot_name,
@@ -1312,7 +1421,17 @@ def agent(
                 )
             await agent_loop.close_mcp()
 
-        asyncio.run(run_once())
+        try:
+            asyncio.run(run_once())
+        except KeyboardInterrupt:
+            emit_process_stop(config, component="agent", reason="keyboard_interrupt")
+            raise
+        except Exception as exc:
+            record_handled_exception(config, component="agent", exc=exc, source="agent.run_once")
+            emit_process_stop(config, component="agent", reason="crash")
+            raise
+        else:
+            emit_process_stop(config, component="agent", reason="clean_exit")
     else:
         # Interactive mode — route through bus like other channels
         from teai_builder.bus.events import InboundMessage
@@ -1342,6 +1461,7 @@ def agent(
             signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
         async def run_interactive():
+            install_asyncio_exception_handler(asyncio.get_running_loop(), config, component="agent")
             bus_task = asyncio.create_task(agent_loop.run())
             turn_done = asyncio.Event()
             turn_done.set()
@@ -1461,7 +1581,17 @@ def agent(
                 await asyncio.gather(bus_task, outbound_task, return_exceptions=True)
                 await agent_loop.close_mcp()
 
-        asyncio.run(run_interactive())
+        try:
+            asyncio.run(run_interactive())
+        except KeyboardInterrupt:
+            emit_process_stop(config, component="agent", reason="keyboard_interrupt")
+            raise
+        except Exception as exc:
+            record_handled_exception(config, component="agent", exc=exc, source="agent.interactive")
+            emit_process_stop(config, component="agent", reason="crash")
+            raise
+        else:
+            emit_process_stop(config, component="agent", reason="clean_exit")
 
 
 # ============================================================================

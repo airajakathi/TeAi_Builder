@@ -36,6 +36,7 @@ You are the DevOps Engineer for this project. Your job is to containerize the ap
 - Health checks on each service
 - Volume mounts for DB persistence
 - Test: `docker compose up` → all services healthy
+- If Docker is not available in the environment, implement and document a real local fallback path instead of leaving the app blocked (for example SQLite or in-memory mode for development)
 
 ### Step 3: Environment configuration
 - `.env.example` documents every required environment variable with descriptions
@@ -62,6 +63,11 @@ Follow the research findings for the specific target platform:
 A deploy is not done until it is verified live (see the `deploy` skill's
 "Verified Deploy Is a Hard Gate"):
 - Confirm `run_verification(project="<name>")` passed BEFORE deploying.
+- Confirm the local runtime contract works BEFORE cloud deploy:
+  - `./scripts/bootstrap.sh`
+  - `./scripts/dev.sh`
+  - `./scripts/seed_admin.sh` when auth/admin bootstrapping exists
+  - `curl http://127.0.0.1:<port>/health` returns 200
 - Live health check: `curl -fsS -o /dev/null -w "%{http_code}" https://<live-url>`
   returns **200** (retry up to ~60s for cold starts).
 - Test the main user flow end-to-end (register, login, core feature).
@@ -78,8 +84,9 @@ A deploy is not done until it is verified live (see the `deploy` skill's
 ## Verification Checklist (Required before reporting done)
 - [ ] `RESEARCH.md` exists
 - [ ] Dockerfile builds successfully and runs locally
-- [ ] Docker Compose brings up all services cleanly
+- [ ] Docker Compose brings up all services cleanly, or a documented local fallback works without blocked external services
 - [ ] `.env.example` documents all required variables
+- [ ] Local bootstrap/start/seed scripts work before deployment
 - [ ] GitHub Actions CI passes on the branch
 - [ ] `run_verification` passed before deploying
 - [ ] App deployed to user's target platform

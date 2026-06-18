@@ -108,6 +108,36 @@ class TestConsolidatorSummarize:
         result = await consolidator.archive([])
         assert result is None
 
+    async def test_project_scoped_session_archives_to_project_memory(
+        self,
+        consolidator,
+        mock_provider,
+        store,
+        tmp_path,
+    ):
+        mock_provider.chat_with_retry.return_value = MagicMock(
+            content="Project-specific summary",
+            finish_reason="stop",
+        )
+        project = tmp_path / "projects" / "alpha"
+        project.mkdir(parents=True)
+        session = Session(key="websocket:alpha")
+        session.metadata["workspace_scope"] = {
+            "project_path": str(project.resolve()),
+            "access_mode": "restricted",
+        }
+
+        await consolidator.archive(
+            [{"role": "user", "content": "build alpha"}],
+            session_key=session.key,
+            session=session,
+        )
+
+        project_entries = store.for_workspace(project).read_unprocessed_history(0)
+        root_entries = store.read_unprocessed_history(0)
+        assert [e["content"] for e in project_entries] == ["Project-specific summary"]
+        assert root_entries == []
+
 
 class TestConsolidatorPromptContract:
     def test_archive_prompt_outputs_attribute_tags_without_missing_context_claims(self):
@@ -123,7 +153,7 @@ class TestConsolidatorPromptContract:
 class TestConsolidatorArchiveErrorHandling:
     """archive() must fall back to raw_archive when the LLM returns an error
     response (finish_reason == 'error'), e.g. overloaded / quota exceeded.
-    See https://github.com/airajakathi/TeAi_Builder/issues/3244
+    See issue #3244.
     """
 
     async def test_archive_falls_back_on_error_finish_reason(self, consolidator, mock_provider, store):

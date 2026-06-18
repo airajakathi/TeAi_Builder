@@ -17,7 +17,9 @@ vi.mock("@/lib/api", async (importOriginal) => {
 });
 
 function fakeClient() {
-  const sessionUpdateHandlers = new Set<(chatId: string, scope?: string) => void>();
+  const sessionUpdateHandlers = new Set<
+    (chatId: string, scope?: string, workspaceScope?: unknown, project?: unknown) => void
+  >();
   return {
     status: "open" as const,
     defaultChatId: null as string | null,
@@ -25,12 +27,19 @@ function fakeClient() {
     onError: () => () => {},
     onChat: () => () => {},
     getRunStartedAt: () => null,
-    onSessionUpdate: (handler: (chatId: string, scope?: string) => void) => {
+    onSessionUpdate: (
+      handler: (chatId: string, scope?: string, workspaceScope?: unknown, project?: unknown) => void,
+    ) => {
       sessionUpdateHandlers.add(handler);
       return () => sessionUpdateHandlers.delete(handler);
     },
-    emitSessionUpdate: (chatId: string, scope?: string) => {
-      for (const handler of sessionUpdateHandlers) handler(chatId, scope);
+    emitSessionUpdate: (
+      chatId: string,
+      scope?: string,
+      workspaceScope?: unknown,
+      project?: unknown,
+    ) => {
+      for (const handler of sessionUpdateHandlers) handler(chatId, scope, workspaceScope, project);
     },
     sendMessage: vi.fn(),
     newChat: vi.fn(),
@@ -357,6 +366,33 @@ describe("useSessions", () => {
     expect(result.current.messages[0]!.role).toBe("assistant");
     expect(result.current.messages[0]!.content).toBe("final answer");
     expect(result.current.messages[0]!.reasoning).toBe("hidden but persisted reasoning");
+  });
+
+  it("drops replayed assistant rows that only contain leaked internal tool markup", async () => {
+    vi.mocked(api.fetchWebuiThread).mockResolvedValue({
+      schemaVersion: 3,
+      messages: [
+        { id: "u1", role: "user", content: "build it", createdAt: 1 },
+        {
+          id: "a1",
+          role: "assistant",
+          content: "<tool_call>\n<function=write_file>\n<parameter=content>\n<!DOCTYPE html>",
+          createdAt: 2,
+        },
+        { id: "a2", role: "assistant", content: "Done building it.", createdAt: 3 },
+      ],
+    });
+
+    const { result } = renderHook(() => useSessionHistory("websocket:chat-tool-leak"), {
+      wrapper: wrap(fakeClient()),
+    });
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.messages.map((message) => message.content)).toEqual([
+      "build it",
+      "Done building it.",
+    ]);
   });
 
   it("accepts transcript rows produced by the server replay reducer", async () => {

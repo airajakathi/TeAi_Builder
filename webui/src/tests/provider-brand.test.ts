@@ -5,26 +5,34 @@ import { faviconUrls, logoFallbackUrls, providerBrand } from "@/lib/provider-bra
 describe("provider brand logos", () => {
   it("uses multiple favicon sources before falling back to initials", () => {
     expect(faviconUrls("z.ai")).toEqual([
-      "https://z.ai/favicon.ico",
-      "https://icons.duckduckgo.com/ip3/z.ai.ico",
       "https://www.google.com/s2/favicons?domain=z.ai&sz=64",
+      "https://icons.duckduckgo.com/ip3/z.ai.ico",
+      "https://z.ai/favicon.ico",
     ]);
   });
 
   it("keeps explicit Google favicon URLs first before trying fallbacks", () => {
     expect(logoFallbackUrls("https://www.google.com/s2/favicons?domain=browserbase.com&sz=64")).toEqual([
       "https://www.google.com/s2/favicons?domain=browserbase.com&sz=64",
-      "https://browserbase.com/favicon.ico",
       "https://icons.duckduckgo.com/ip3/browserbase.com.ico",
+      "https://browserbase.com/favicon.ico",
     ]);
   });
 
   it("normalizes path-like favicon domains for secondary fallbacks", () => {
     expect(logoFallbackUrls("https://www.google.com/s2/favicons?domain=github.com/HKUDS/CLI-Anything&sz=64")).toEqual([
       "https://www.google.com/s2/favicons?domain=github.com/HKUDS/CLI-Anything&sz=64",
-      "https://github.com/favicon.ico",
-      "https://icons.duckduckgo.com/ip3/github.com.ico",
       "https://www.google.com/s2/favicons?domain=github.com%2FHKUDS%2FCLI-Anything&sz=64",
+      "https://icons.duckduckgo.com/ip3/github.com.ico",
+      "https://github.com/favicon.ico",
+    ]);
+  });
+
+  it("skips non-image third-party URLs before proxy favicons", () => {
+    expect(logoFallbackUrls("https://www.moonshot.ai/")).toEqual([
+      "https://www.google.com/s2/favicons?domain=moonshot.ai&sz=64",
+      "https://icons.duckduckgo.com/ip3/moonshot.ai.ico",
+      "https://moonshot.ai/favicon.ico",
     ]);
   });
 

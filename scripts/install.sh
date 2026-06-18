@@ -2,7 +2,7 @@
 set -eu
 
 package="teai_builder-ai"
-main_source="https://github.com/airajakathi/TeAi_Builder/archive/refs/heads/main.zip"
+main_source="https://github.com/example/example/archive/refs/heads/main.zip"
 install_target="$package"
 install_source="PyPI"
 dry_run="0"

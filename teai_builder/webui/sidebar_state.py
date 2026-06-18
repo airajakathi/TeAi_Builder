@@ -8,7 +8,6 @@ does not modify agent sessions.
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -16,6 +15,7 @@ from typing import Any
 from loguru import logger
 
 from teai_builder.config.paths import get_webui_dir
+from teai_builder.utils.helpers import write_bytes_atomic
 
 WEBUI_SIDEBAR_STATE_SCHEMA_VERSION = 1
 _MAX_STATE_FILE_BYTES = 256 * 1024
@@ -177,20 +177,5 @@ def write_webui_sidebar_state(raw: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("sidebar state is too large")
 
     path = webui_sidebar_state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    with open(tmp, "wb") as f:
-        f.write(encoded)
-        f.write(b"\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-    try:
-        dir_fd = os.open(path.parent, os.O_RDONLY)
-    except OSError:
-        return state
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    write_bytes_atomic(path, encoded + b"\n", fsync=True)
     return state

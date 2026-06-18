@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from teai_builder.config.paths import get_runtime_subdir
 
 
 @dataclass
@@ -79,7 +80,7 @@ class DistilledSkill:
 class Distiller:
     def __init__(self, storage_dir: Path | None = None) -> None:
         if storage_dir is None:
-            storage_dir = Path.home() / ".teai_builder" / "distill"
+            storage_dir = get_runtime_subdir("distill")
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
@@ -138,6 +139,59 @@ class Distiller:
         skills.sort(key=lambda s: s.created_at, reverse=True)
         return skills
 
+    @staticmethod
+    def summarize_workflow_run(run: Any) -> str:
+        workflow_id = getattr(run, "workflow_id", "workflow")
+        state = getattr(run, "state", "unknown")
+        step_states = getattr(run, "step_states", {}) or {}
+        completed = []
+        failed = []
+        skipped = []
+        for step_id, step_run in step_states.items():
+            step_state = getattr(step_run, "state", "")
+            if step_state == "completed":
+                completed.append(step_id)
+            elif step_state == "failed":
+                failed.append(step_id)
+            elif step_state == "skipped":
+                skipped.append(step_id)
+        parts = [
+            f"Workflow {workflow_id} finished with state {state}.",
+        ]
+        if completed:
+            parts.append("Completed steps: " + ", ".join(completed) + ".")
+        if failed:
+            parts.append("Failed steps: " + ", ".join(failed) + ".")
+        if skipped:
+            parts.append("Skipped steps: " + ", ".join(skipped) + ".")
+        error = getattr(run, "error", None)
+        if error:
+            parts.append(f"Error: {error}.")
+        return " ".join(parts)
+
+    @staticmethod
+    def _keywords_for_run(run: Any, run_summary: str) -> list[str]:
+        keywords: list[str] = []
+        lowered = run_summary.lower()
+        for keyword in ["scaffold", "plan", "implement", "review", "validate", "verify", "test", "build"]:
+            if keyword in lowered:
+                keywords.append(keyword)
+        for step_id, step_run in (getattr(run, "step_states", {}) or {}).items():
+            step_name = getattr(step_run, "name", step_id)
+            for token in [str(step_id), str(step_name)]:
+                token_lower = token.strip().lower().replace("_", " ")
+                if any(word in token_lower for word in ["plan", "review", "validate", "verify", "build", "test", "scaffold", "implement"]):
+                    keywords.append(token_lower.replace(" ", "_"))
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for keyword in keywords:
+            normalized = keyword.strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+        return ordered
+
     def mine_from_workflow_run(self, run_summary: str, run_metadata: dict[str, Any] | None = None) -> list[DistilledPattern]:
         findings: list[DistilledPattern] = []
         lowered = run_summary.lower()
@@ -154,6 +208,44 @@ class Distiller:
                 findings.append(pattern)
         for pattern in findings:
             self.save_pattern(pattern)
+        return findings
+
+    def mine_from_run(self, run: Any) -> list[DistilledPattern]:
+        summary = self.summarize_workflow_run(run)
+        metadata = dict(getattr(run, "metadata", {}) or {})
+        metadata.update(
+            {
+                "workflow_id": getattr(run, "workflow_id", None),
+                "run_id": getattr(run, "run_id", None),
+                "state": getattr(run, "state", None),
+            }
+        )
+        evidence = {
+            "run_id": getattr(run, "run_id", None),
+            "workflow_id": getattr(run, "workflow_id", None),
+            "state": getattr(run, "state", None),
+            "summary": summary[:300],
+        }
+        findings: list[DistilledPattern] = []
+        workflow_id = str(getattr(run, "workflow_id", "workflow"))
+        for keyword in self._keywords_for_run(run, summary):
+            seed = f"{workflow_id}:{keyword}"
+            pattern = DistilledPattern(
+                pattern_id=hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12],
+                name=f"{workflow_id}: {keyword}",
+                description=f"Distilled from workflow `{workflow_id}` around `{keyword}`.",
+                evidence=[evidence],
+                tags=["workflow", workflow_id, keyword, str(getattr(run, "state", "unknown"))],
+                metadata=metadata,
+            )
+            self.save_pattern(pattern)
+            findings.append(pattern)
+        return findings
+
+    def mine_recent_runs(self, runs: list[Any]) -> list[DistilledPattern]:
+        findings: list[DistilledPattern] = []
+        for run in runs:
+            findings.extend(self.mine_from_run(run))
         return findings
 
     def build_skill_from_patterns(self, skill_name: str, pattern_ids: list[str]) -> DistilledSkill:
@@ -197,6 +289,6 @@ def get_distiller() -> Distiller:
     if _distiller is None:
         try:
             _distiller = Distiller()
-        except PermissionError:
+        except OSError:
             _distiller = Distiller(storage_dir=Path("/tmp/teai_builder_distill"))
     return _distiller

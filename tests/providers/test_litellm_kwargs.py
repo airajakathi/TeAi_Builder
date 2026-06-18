@@ -485,7 +485,7 @@ async def test_openrouter_sets_default_attribution_headers() -> None:
         await provider._ensure_client()
 
     headers = mock_client_cls.call_args.kwargs["default_headers"]
-    assert headers["HTTP-Referer"] == "https://github.com/airajakathi/TeAi_Builder"
+    assert headers["HTTP-Referer"] == "https://github.com/example/example"
     assert headers["X-OpenRouter-Title"] == "teai_builder"
     assert headers["X-OpenRouter-Categories"] == "cli-agent,personal-agent"
     assert "x-session-affinity" in headers

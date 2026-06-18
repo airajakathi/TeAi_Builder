@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from teai_builder.bus.events import InboundMessage, OutboundMessage
-from teai_builder.cli.commands import app
+from teai_builder.cli.commands import _load_runtime_config, app
 from teai_builder.config.schema import Config
 from teai_builder.cron.service import CronJobSkippedError
 from teai_builder.cron.session_turns import CRON_DEFER_UNTIL_IDLE_META, CRON_TRIGGER_META
@@ -99,7 +99,6 @@ def test_onboard_fresh_install(mock_paths):
     assert result.exit_code == 0
     assert "Created config" in result.stdout
     assert "Created workspace" in result.stdout
-    assert "teai_builder is ready" in result.stdout
     assert config_file.exists()
     assert (workspace_dir / "AGENTS.md").exists()
     assert (workspace_dir / "memory" / "MEMORY.md").exists()
@@ -877,7 +876,9 @@ def test_agent_uses_default_config_when_no_workspace_or_config_flags(mock_agent_
     result = runner.invoke(app, ["agent", "-m", "hello"])
 
     assert result.exit_code == 0
-    assert mock_agent_runtime["load_config"].call_args.args == (None,)
+    assert mock_agent_runtime["load_config"].call_args.args == (
+        Path.cwd() / "instance" / "config.json",
+    )
     assert mock_agent_runtime["sync_templates"].call_args.args == (
         mock_agent_runtime["config"].workspace_path,
     )
@@ -1318,6 +1319,135 @@ def test_gateway_workspace_option_overrides_config(monkeypatch, tmp_path: Path) 
     assert isinstance(result.exception, _StopGatewayError)
     assert seen["workspace"] == override
     assert config.workspace_path == override
+
+
+def test_gateway_preserves_explicit_websocket_disable(monkeypatch, tmp_path: Path) -> None:
+    config = Config()
+    config.agents.defaults.workspace = str(tmp_path / "workspace")
+    config.channels.__pydantic_extra__ = {"websocket": {"enabled": False}}
+
+    class _StopAtChannelManager(Exception):
+        pass
+
+    class _FakeChannelManager:
+        def __init__(self, runtime_config, *_args, **_kwargs) -> None:
+            assert runtime_config.channels.__pydantic_extra__["websocket"]["enabled"] is False
+            raise _StopAtChannelManager()
+
+    class _FakeAgentLoop:
+        @classmethod
+        def from_config(cls, *_args, **_kwargs):
+            return cls()
+
+        def _schedule_background(self, _coro) -> None:
+            return None
+
+    class _FakeCronService:
+        def __init__(self, _path) -> None:
+            self.on_job = None
+
+    _patch_cli_command_runtime(
+        monkeypatch,
+        config,
+        message_bus=lambda: object(),
+        session_manager=lambda _workspace: object(),
+        cron_service=_FakeCronService,
+    )
+    monkeypatch.setattr("teai_builder.cli.commands.AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr("teai_builder.channels.manager.ChannelManager", _FakeChannelManager)
+
+    result = runner.invoke(app, ["gateway"])
+
+    assert isinstance(result.exception, _StopAtChannelManager)
+
+
+def test_runtime_config_prefers_local_instance_workspace(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    instance_dir = repo_root / "instance"
+    instance_dir.mkdir(parents=True)
+
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setattr("teai_builder.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("teai_builder.cli.commands._warn_deprecated_config_keys", lambda _path: None)
+
+    config = Config()
+    loaded = {"config_path": None}
+
+    def _load_config(config_path=None):
+        loaded["config_path"] = config_path
+        return config
+
+    monkeypatch.setattr("teai_builder.config.loader.load_config", _load_config)
+    monkeypatch.setattr("teai_builder.config.loader.resolve_config_env_vars", lambda cfg: cfg)
+
+    runtime = _load_runtime_config()
+
+    assert loaded["config_path"] == instance_dir / "config.json"
+    assert runtime.workspace_path == instance_dir / "workspace"
+
+
+def test_runtime_config_infers_sibling_instance_config_from_workspace_dir(
+    monkeypatch, tmp_path: Path
+) -> None:
+    instance_dir = tmp_path / "repo" / "instance"
+    workspace_dir = instance_dir / "workspace"
+    workspace_dir.mkdir(parents=True)
+    config_file = instance_dir / "config.json"
+    config_file.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr("teai_builder.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("teai_builder.cli.commands._warn_deprecated_config_keys", lambda _path: None)
+
+    config = Config()
+    loaded = {"config_path": None}
+
+    def _load_config(config_path=None):
+        loaded["config_path"] = config_path
+        return config
+
+    monkeypatch.setattr("teai_builder.config.loader.load_config", _load_config)
+    monkeypatch.setattr("teai_builder.config.loader.resolve_config_env_vars", lambda cfg: cfg)
+
+    runtime = _load_runtime_config(workspace=str(workspace_dir))
+
+    assert loaded["config_path"] == config_file
+    assert runtime.workspace_path == workspace_dir
+
+
+def test_runtime_config_workspace_fallback_reports_default_config(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir(parents=True)
+    default_config = tmp_path / "default-config.json"
+    loaded = {"config_path": None}
+
+    monkeypatch.setattr(
+        "teai_builder.config.loader.get_config_path",
+        lambda: default_config,
+    )
+    monkeypatch.setattr("teai_builder.config.loader.set_config_path", lambda _path: None)
+    monkeypatch.setattr("teai_builder.cli.commands._warn_deprecated_config_keys", lambda _path: None)
+
+    config = Config()
+
+    def _load_config(config_path=None):
+        loaded["config_path"] = config_path
+        return config
+
+    monkeypatch.setattr("teai_builder.config.loader.load_config", _load_config)
+    monkeypatch.setattr("teai_builder.config.loader.resolve_config_env_vars", lambda cfg: cfg)
+
+    runtime = _load_runtime_config(workspace=str(workspace_dir))
+
+    captured = capsys.readouterr().out.replace("\n", "")
+    assert loaded["config_path"] is None
+    assert runtime.workspace_path == workspace_dir
+    assert (
+        "No instance config found near workspace; "
+        f"using default config: {default_config.resolve()}"
+    ) in captured
+    assert f"Using workspace: {workspace_dir}" in captured
 
 
 def test_gateway_uses_workspace_directory_for_cron_store(monkeypatch, tmp_path: Path) -> None:

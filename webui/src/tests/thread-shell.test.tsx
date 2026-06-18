@@ -7,13 +7,41 @@ import { CLI_APPS_CHANGED_EVENT } from "@/lib/cli-app-events";
 import { ClientProvider } from "@/providers/ClientProvider";
 import type { CliAppsPayload, SettingsPayload, UIMessage } from "@/lib/types";
 
+vi.mock("@/components/editor/MonacoEditor", () => ({
+  MonacoEditor: ({
+    value,
+    onChange,
+    readOnly,
+    onActiveWordChange,
+  }: {
+    value?: string;
+    onChange?: (value: string) => void;
+    readOnly?: boolean;
+    onActiveWordChange?: (value: string | null) => void;
+  }) => (
+    <div>
+      <button type="button" data-testid="mock-monaco-symbol" onClick={() => onActiveWordChange?.("renderPreview")}>
+        Use symbol
+      </button>
+      <textarea
+        data-testid="mock-monaco"
+        value={value}
+        readOnly={readOnly}
+        onChange={(event) => onChange?.(event.target.value)}
+      />
+    </div>
+  ),
+}));
+
 const HERO_GREETING_PATTERN =
   /What should we work on\?|Where should we start\?|What are we building today\?|What should we tackle together\?/;
 
 function makeClient() {
   const errorHandlers = new Set<(err: { kind: string }) => void>();
   const chatHandlers = new Map<string, Set<(ev: import("@/lib/types").InboundEvent) => void>>();
-  const sessionUpdateHandlers = new Set<(chatId: string, scope?: string) => void>();
+  const sessionUpdateHandlers = new Set<
+    (chatId: string, scope?: string, workspaceScope?: unknown, project?: unknown) => void
+  >();
   const goalStateByChatId = new Map<string, import("@/lib/types").GoalStateWsPayload>();
   return {
     status: "open" as const,
@@ -39,7 +67,9 @@ function makeClient() {
         errorHandlers.delete(handler);
       };
     },
-    onSessionUpdate: (handler: (chatId: string, scope?: string) => void) => {
+    onSessionUpdate: (
+      handler: (chatId: string, scope?: string, workspaceScope?: unknown, project?: unknown) => void,
+    ) => {
       sessionUpdateHandlers.add(handler);
       return () => {
         sessionUpdateHandlers.delete(handler);
@@ -54,8 +84,8 @@ function makeClient() {
       }
       for (const h of chatHandlers.get(chatId) ?? []) h(ev);
     },
-    _emitSessionUpdate(chatId: string, scope?: string) {
-      for (const h of sessionUpdateHandlers) h(chatId, scope);
+    _emitSessionUpdate(chatId: string, scope?: string, workspaceScope?: unknown, project?: unknown) {
+      for (const h of sessionUpdateHandlers) h(chatId, scope, workspaceScope, project);
     },
     sendMessage: vi.fn(),
     newChat: vi.fn(),
@@ -284,6 +314,403 @@ describe("ThreadShell", () => {
     });
 
     expect(await screen.findByTestId("composer-model-logo-openai_codex")).toBeInTheDocument();
+  });
+
+  it("reuses a failed CLI run by seeding the composer draft", async () => {
+    const client = makeClient();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("websocket%3Achat-reuse/webui-thread")) {
+          return httpJson({
+            schemaVersion: 3,
+            messages: [{
+              id: "trace-cli-failed",
+              role: "tool",
+              kind: "trace",
+              content: 'run_cli_app({"name":"pytest","args":["-q","tests/test_editor.py"],"json":false})',
+              traces: ['run_cli_app({"name":"pytest","args":["-q","tests/test_editor.py"],"json":false})'],
+              toolEvents: [{
+                phase: "error",
+                call_id: "call-pytest",
+                name: "run_cli_app",
+                arguments: { name: "pytest", args: ["-q", "tests/test_editor.py"], json: false },
+                error: "FAILED tests/test_editor.py::test_render",
+              }],
+              createdAt: 1,
+            }],
+          });
+        }
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({}),
+        };
+      }),
+    );
+
+    render(wrap(
+      client,
+      <ThreadShell
+        session={session("chat-reuse")}
+        title="Chat chat-reuse"
+        onToggleSidebar={() => {}}
+        onNewChat={() => {}}
+      />,
+    ));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /failed @pytest/i })).toBeInTheDocument());
+    fireEvent.click(await screen.findByTestId("activity-cli-reuse-pytest"));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message input")).toHaveValue(
+        "Rerun @pytest -q tests/test_editor.py and inspect the result.",
+      );
+    });
+  });
+
+  it("reuses the most recent completed CLI run from the header action", async () => {
+    const client = makeClient();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("websocket%3Achat-header-reuse/webui-thread")) {
+          return httpJson({
+            schemaVersion: 3,
+            messages: [{
+              id: "trace-cli-done",
+              role: "tool",
+              kind: "trace",
+              content: 'run_cli_app({"name":"pytest","args":["-q","tests/test_editor.py"],"json":false})',
+              traces: ['run_cli_app({"name":"pytest","args":["-q","tests/test_editor.py"],"json":false})'],
+              toolEvents: [{
+                phase: "end",
+                call_id: "call-pytest",
+                name: "run_cli_app",
+                arguments: { name: "pytest", args: ["-q", "tests/test_editor.py"], json: false },
+              }],
+              createdAt: 1,
+            }],
+          });
+        }
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({}),
+        };
+      }),
+    );
+
+    render(wrap(
+      client,
+      <ThreadShell
+        session={session("chat-header-reuse")}
+        title="Chat chat-header-reuse"
+        onToggleSidebar={() => {}}
+        onNewChat={() => {}}
+      />,
+    ));
+
+    fireEvent.click(await screen.findByTestId("thread-reuse-last-cli-run"));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Message input")).toHaveValue(
+        "Run @pytest -q tests/test_editor.py and inspect the result.",
+      );
+    });
+  });
+
+  it("opens a symbol definition search from the file preview editor", async () => {
+    const client = makeClient();
+    window.localStorage.setItem(
+      "teai_builder.webui.threadWorkspace.v1:chat-definition",
+      JSON.stringify({
+        filePreviewPath: "/workspace/src/editor.ts",
+        workspaceQuickOpenMode: "files",
+      }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("websocket%3Achat-definition/webui-thread")) {
+          return httpJson(transcriptFromSimpleMessages([{ role: "assistant", content: "definition" }]));
+        }
+        if (url.includes("/file-preview?")) {
+          return httpJson({
+            path: "/workspace/src/editor.ts",
+            display_path: "src/editor.ts",
+            project_path: "/workspace",
+            language: "typescript",
+            content: "export function renderPreview() { return true; }",
+            size: 48,
+            revision: "rev-definition",
+            truncated: false,
+          });
+        }
+        if (url.includes("/workspace-tree")) {
+          return httpJson({
+            root: {
+              path: "/workspace",
+              display_path: ".",
+              name: "workspace",
+              kind: "directory",
+              children: [{
+                path: "/workspace/src",
+                display_path: "src",
+                name: "src",
+                kind: "directory",
+                children: [{
+                  path: "/workspace/src/editor.ts",
+                  display_path: "src/editor.ts",
+                  name: "editor.ts",
+                  kind: "file",
+                }],
+              }],
+            },
+            truncated: false,
+          });
+        }
+        if (url.includes("/workspace-symbol-search")) {
+          return httpJson({
+            query: "renderpreview",
+            workspace_root: "/workspace",
+            scanned_files: 1,
+            truncated: false,
+            items: [{
+              path: "/workspace/src/editor.ts:1:17",
+              display_path: "src/editor.ts",
+              name: "renderPreview",
+              kind: "function",
+              line: 1,
+              column: 17,
+              score: 180,
+            }],
+          });
+        }
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({}),
+        };
+      }),
+    );
+
+    render(wrap(
+      client,
+      <ThreadShell
+        session={session("chat-definition")}
+        title="Chat chat-definition"
+        onToggleSidebar={() => {}}
+        onNewChat={() => {}}
+      />,
+    ));
+
+    expect(await screen.findByTestId("file-preview-panel")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByTestId("mock-monaco-symbol"));
+    fireEvent.click(screen.getByRole("button", { name: "Go to definition" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/sessions/websocket%3Achat-definition/workspace-symbol-search?q=renderPreview&limit=40",
+        expect.objectContaining({
+          headers: { Authorization: "Bearer tok" },
+        }),
+      );
+    });
+    expect(await screen.findByRole("textbox", { name: "Search workspace symbols" })).toHaveValue("renderPreview");
+  });
+
+  it("opens a symbol reference search from the file preview editor", async () => {
+    const client = makeClient();
+    window.localStorage.setItem(
+      "teai_builder.webui.threadWorkspace.v1:chat-references",
+      JSON.stringify({
+        filePreviewPath: "/workspace/src/editor.ts",
+        workspaceQuickOpenMode: "files",
+      }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("websocket%3Achat-references/webui-thread")) {
+          return httpJson(transcriptFromSimpleMessages([{ role: "assistant", content: "references" }]));
+        }
+        if (url.includes("/file-preview?")) {
+          return httpJson({
+            path: "/workspace/src/editor.ts",
+            display_path: "src/editor.ts",
+            project_path: "/workspace",
+            language: "typescript",
+            content: "export function renderPreview() { return true; }",
+            size: 48,
+            revision: "rev-references",
+            truncated: false,
+          });
+        }
+        if (url.includes("/workspace-tree")) {
+          return httpJson({
+            root: {
+              path: "/workspace",
+              display_path: ".",
+              name: "workspace",
+              kind: "directory",
+              children: [{
+                path: "/workspace/src",
+                display_path: "src",
+                name: "src",
+                kind: "directory",
+                children: [{
+                  path: "/workspace/src/editor.ts",
+                  display_path: "src/editor.ts",
+                  name: "editor.ts",
+                  kind: "file",
+                }],
+              }],
+            },
+            truncated: false,
+          });
+        }
+        if (url.includes("/workspace-reference-search")) {
+          return httpJson({
+            query: "renderpreview",
+            workspace_root: "/workspace",
+            scanned_files: 1,
+            truncated: false,
+            items: [{
+              path: "/workspace/src/consumer.ts:5:12",
+              display_path: "src/consumer.ts",
+              name: "renderPreview",
+              kind: "function",
+              line: 5,
+              column: 12,
+              preview: "renderPreview()",
+              definition_path: "/workspace/src/editor.ts:1:17",
+              definition_display_path: "src/editor.ts",
+              score: 160,
+            }],
+          });
+        }
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({}),
+        };
+      }),
+    );
+
+    render(wrap(
+      client,
+      <ThreadShell
+        session={session("chat-references")}
+        title="Chat chat-references"
+        onToggleSidebar={() => {}}
+        onNewChat={() => {}}
+      />,
+    ));
+
+    expect(await screen.findByTestId("file-preview-panel")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByTestId("mock-monaco-symbol"));
+    fireEvent.click(screen.getByRole("button", { name: "Find references" }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/sessions/websocket%3Achat-references/workspace-reference-search?q=renderPreview&limit=40",
+        expect.objectContaining({
+          headers: { Authorization: "Bearer tok" },
+        }),
+      );
+    });
+    expect(await screen.findByRole("textbox", { name: "Search symbol references" })).toHaveValue("renderPreview");
+  });
+
+  it("restores the open file preview for a chat from local storage", async () => {
+    const client = makeClient();
+    window.localStorage.setItem(
+      "teai_builder.webui.threadWorkspace.v1:chat-restore",
+      JSON.stringify({
+        filePreviewPath: "/workspace/src/app.tsx",
+        workspaceQuickOpenMode: "problems",
+      }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("websocket%3Achat-restore/webui-thread")) {
+          return httpJson(transcriptFromSimpleMessages([{ role: "assistant", content: "restored" }]));
+        }
+        if (url.includes("/file-preview?")) {
+          return httpJson({
+            path: "/workspace/src/app.tsx",
+            display_path: "src/app.tsx",
+            workspace_root: "/workspace",
+            exists: true,
+            is_binary: false,
+            can_edit: true,
+            language: "tsx",
+            size: 24,
+            content: "export default function App() { return null; }",
+            encoding: "utf-8",
+            updated_at: null,
+            line_count: 1,
+          });
+        }
+        if (url.includes("/workspace-tree")) {
+          return httpJson({
+            root: {
+              path: "/workspace",
+              display_path: ".",
+              name: "workspace",
+              kind: "directory",
+              children: [{
+                path: "/workspace/src",
+                display_path: "src",
+                name: "src",
+                kind: "directory",
+                children: [{
+                  path: "/workspace/src/app.tsx",
+                  display_path: "src/app.tsx",
+                  name: "app.tsx",
+                  kind: "file",
+                }],
+              }],
+            },
+            truncated: false,
+          });
+        }
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({}),
+        };
+      }),
+    );
+
+    render(wrap(
+      client,
+      <ThreadShell
+        session={session("chat-restore")}
+        title="Chat chat-restore"
+        onToggleSidebar={() => {}}
+        onNewChat={() => {}}
+      />,
+    ));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/sessions/websocket%3Achat-restore/file-preview?"),
+        expect.objectContaining({
+          headers: { Authorization: "Bearer tok" },
+        }),
+      );
+    });
+    expect(await screen.findByTestId("file-preview-panel")).toBeInTheDocument();
   });
 
   it("opens model settings from the unconfigured model badge", async () => {

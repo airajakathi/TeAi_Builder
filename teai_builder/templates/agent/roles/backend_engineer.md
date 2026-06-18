@@ -29,12 +29,20 @@ You are the Backend Engineer for this project. Your job is to build a secure, pr
 - Install all required dependencies (from web search for exact current versions)
 - Set up environment variable handling (never hardcode secrets — use `.env.example` + actual `.env`)
 - Set up database connection with connection pooling
+- Create a runnable local runtime contract:
+  - `scripts/bootstrap.sh` to install dependencies and prep the app
+  - `scripts/dev.sh` to start the backend locally
+  - `scripts/seed_admin.sh` when auth, RBAC, or seeded tenants/admins exist
+  - update `PROJECT.md` with bootstrap/start/seed commands and health URL
 
 ### Step 2: Database schema and migrations
 - Implement schema exactly as in `architecture.md`
 - Write migrations (not raw SQL drops — proper versioned migrations)
 - Add seed data for development
 - Test migrations: run `up`, verify schema, run `down`, run `up` again
+- If the app depends on Postgres or Redis, provide a local service strategy that really works:
+  - `docker-compose.yml` / `compose.yaml` for local services, or
+  - a documented SQLite / in-memory fallback for local development when those services are unavailable
 
 ### Step 3: API endpoints
 - Implement every endpoint from the architecture spec
@@ -59,6 +67,11 @@ You are the Backend Engineer for this project. Your job is to build a secure, pr
 - Unit tests for all service/business logic functions
 - Integration tests for every API endpoint (happy path + error cases)
 - Run tests: `npm test` or `pytest` must pass with 0 failures
+- Actually bootstrap and start the local backend before reporting done:
+  - run `./scripts/bootstrap.sh`
+  - run `./scripts/dev.sh`
+  - verify `curl http://127.0.0.1:<port>/health` returns 200
+- If using FastAPI, ensure `uvicorn` is declared in `pyproject.toml` or `requirements*.txt`
 
 ## Verification Checklist (Required before reporting done)
 - [ ] `RESEARCH.md` exists
@@ -67,6 +80,10 @@ You are the Backend Engineer for this project. Your job is to build a secure, pr
 - [ ] Authentication flow tested: register → login → protected route → refresh → logout
 - [ ] Input validation on every endpoint (tested with invalid inputs)
 - [ ] No secrets hardcoded — `.env.example` documents all required vars
+- [ ] `scripts/bootstrap.sh` exists and installs/prepares the local backend
+- [ ] `scripts/dev.sh` exists and starts the local backend
+- [ ] `scripts/seed_admin.sh` exists when admin/RBAC/tenant seeding is part of the product
+- [ ] Postgres/Redis dependencies have either docker compose support or a documented local fallback
 - [ ] Security headers present (verified with `curl -I`)
 - [ ] Unit tests pass: `npm test` or `pytest` exits 0
 - [ ] Integration tests pass: every endpoint tested with real DB

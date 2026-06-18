@@ -91,7 +91,8 @@ def test_workspace_scope_metadata_falls_back_for_stale_session(tmp_path: Path) -
     )
 
     assert scope.project_path == tmp_path.resolve()
-    assert scope.access_mode == "full"
+    assert scope.access_mode == "restricted"
+    assert scope.restrict_to_workspace is True
 
 
 @pytest.mark.asyncio

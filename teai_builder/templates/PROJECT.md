@@ -42,6 +42,20 @@
 
 ---
 
+## Local Runtime
+
+**Bootstrap Command:** `./scripts/bootstrap.sh`
+
+**Dev Start Command:** `./scripts/dev.sh`
+
+**Seed/Admin Command:** `./scripts/seed_admin.sh`
+
+**Health Check URL:** `http://127.0.0.1:<port>/health`
+
+**Service Strategy:** {docker compose for local services | sqlite/in-memory fallback | managed local alternative}
+
+---
+
 ## Proof of Work Log
 
 | Phase | Date | Evidence |

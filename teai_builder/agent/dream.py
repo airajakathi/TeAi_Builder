@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from teai_builder.config.paths import get_runtime_subdir
+
 
 @dataclass
 class DreamRecord:
@@ -40,7 +42,7 @@ class DreamRecord:
 class DreamMaintainer:
     def __init__(self, storage_dir: Path | None = None) -> None:
         if storage_dir is None:
-            storage_dir = Path.home() / ".teai_builder" / "dream"
+            storage_dir = get_runtime_subdir("dream")
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
@@ -111,6 +113,6 @@ def get_dream_maintainer() -> DreamMaintainer:
     if _maintainer is None:
         try:
             _maintainer = DreamMaintainer()
-        except PermissionError:
+        except OSError:
             _maintainer = DreamMaintainer(storage_dir=Path("/tmp/teai_builder_dream"))
     return _maintainer

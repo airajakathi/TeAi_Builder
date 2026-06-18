@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from teai_builder.agent.llm3.worker_runtime import WorkerRuntime
 from teai_builder.config.schema import AgentDefaults
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
@@ -179,6 +180,211 @@ async def test_spawn_tool_rejects_when_at_concurrency_limit(tmp_path):
     await asyncio.gather(*mgr._running_tasks.values(), return_exceptions=True)
 
 
+@pytest.mark.asyncio
+async def test_worker_runtime_wraps_subagent_spawn_worker(tmp_path):
+    from teai_builder.agent.subagent import SubagentManager
+    from teai_builder.bus.queue import MessageBus
+
+    bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    mgr = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    )
+    runtime = WorkerRuntime(mgr)
+    spawn_mock = AsyncMock(
+        return_value={
+            "worker_id": "wrk-1",
+            "label": "label",
+            "launch_message": "Subagent [label] started (id: wrk-1). I'll notify you when it completes.",
+        }
+    )
+
+    with patch.object(mgr, "spawn_worker", spawn_mock):
+        result = await runtime.spawn(
+            spec=SimpleNamespace(
+                task="do task",
+                label="label",
+                role=None,
+                model=None,
+                model_preset=None,
+                origin_channel="test",
+                origin_chat_id="c1",
+                session_key="test:c1",
+                origin_message_id=None,
+                temperature=None,
+                workspace_scope=None,
+                owner_turn_id="turn-1",
+                owner_request_id="req-1",
+            )
+        )
+
+    assert result.worker_id == "wrk-1"
+    assert result.label == "label"
+    assert "started" in result.launch_message
+    assert spawn_mock.await_args.kwargs["owner_turn_id"] == "turn-1"
+    assert spawn_mock.await_args.kwargs["owner_request_id"] == "req-1"
+    assert "on_event" in spawn_mock.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_worker_runtime_wraps_inline_run_worker(tmp_path):
+    from teai_builder.agent.subagent import SubagentManager
+    from teai_builder.bus.queue import MessageBus
+
+    bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    mgr = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    )
+    runtime = WorkerRuntime(mgr)
+
+    with patch.object(
+        mgr,
+        "run_worker",
+        AsyncMock(
+            return_value={
+                "worker_id": "wrk-inline-1",
+                "label": "inline",
+                "status": "completed",
+                "final_output": "done",
+                "stop_reason": "done",
+                "tool_events": [{"name": "read", "status": "ok"}],
+                "usage": {"input_tokens": 10},
+            }
+        ),
+    ):
+        result = await runtime.run(
+            spec=SimpleNamespace(
+                task="do task",
+                label="inline",
+                role=None,
+                model=None,
+                model_preset=None,
+                origin_channel="test",
+                origin_chat_id="c1",
+                session_key="test:c1",
+                origin_message_id=None,
+                temperature=None,
+                workspace_scope=None,
+            )
+        )
+
+    assert result.worker_id == "wrk-inline-1"
+    assert result.status == "completed"
+    assert result.final_output == "done"
+    assert result.tool_events == [{"name": "read", "status": "ok"}]
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_passes_llm3_turn_metadata_to_worker_runtime() -> None:
+    from teai_builder.agent.tools.context import RequestContext
+    from teai_builder.agent.tools.spawn import SpawnTool
+
+    runtime = MagicMock()
+    runtime.get_running_count.return_value = 0
+    runtime.max_concurrent_workers = 3
+    runtime.spawn = AsyncMock(
+        return_value=SimpleNamespace(
+            worker_id="wrk-1",
+            label="worker",
+            launch_message="started",
+        )
+    )
+
+    tool = SpawnTool(manager=None, worker_runtime=runtime)
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="c1",
+            session_key="telegram:c1",
+            metadata={"_llm3_turn_id": "turn-1", "_llm3_request_id": "req-1"},
+        )
+    )
+
+    result = await tool.execute(task="do task", label="worker")
+
+    assert result == "started"
+    spec = runtime.spawn.await_args.args[0]
+    assert spec.owner_turn_id == "turn-1"
+    assert spec.owner_request_id == "req-1"
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_runs_inline_worker_for_direct_requests() -> None:
+    from teai_builder.agent.tools.context import RequestContext
+    from teai_builder.agent.tools.spawn import SpawnTool
+
+    manager = MagicMock()
+    manager.run_worker = AsyncMock(
+        return_value={
+            "worker_id": "wrk-inline-1",
+            "label": "worker",
+            "status": "completed",
+            "final_output": "proof complete",
+        }
+    )
+    manager.spawn = AsyncMock()
+
+    tool = SpawnTool(manager=manager)
+    tool.set_context(
+        RequestContext(
+            channel="cli",
+            chat_id="direct",
+            session_key="cli:direct",
+            metadata={"_inline_subagents": True},
+        )
+    )
+
+    result = await tool.execute(task="do task", label="worker")
+
+    assert result == "Subagent [worker] completed inline.\n\nproof complete"
+    manager.run_worker.assert_awaited_once()
+    manager.spawn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_subagent_announce_result_includes_llm3_owner_metadata(tmp_path):
+    from teai_builder.agent.subagent import SubagentManager
+    from teai_builder.bus.queue import MessageBus
+
+    bus = MessageBus()
+    bus.publish_inbound = AsyncMock()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    mgr = SubagentManager(
+        provider=provider,
+        workspace=tmp_path,
+        bus=bus,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    )
+
+    await mgr._announce_result(
+        "wrk-1",
+        "worker",
+        "do task",
+        "done",
+        {"channel": "telegram", "chat_id": "c1", "session_key": "telegram:c1"},
+        "ok",
+        owner_turn_id="turn-1",
+        owner_request_id="req-1",
+    )
+
+    msg = bus.publish_inbound.await_args.args[0]
+    assert msg.metadata["subagent_task_id"] == "wrk-1"
+    assert msg.metadata["owner_turn_id"] == "turn-1"
+    assert msg.metadata["owner_request_id"] == "req-1"
+    assert msg.metadata["origin_channel"] == "telegram"
+    assert msg.metadata["origin_chat_id"] == "c1"
+
+
 def test_subagent_default_max_concurrent_matches_agent_defaults(tmp_path):
     """Direct SubagentManager construction should use the agent default concurrency limit."""
     from teai_builder.agent.subagent import SubagentManager
@@ -226,13 +432,14 @@ def test_agent_loop_passes_max_iterations_to_subagents(tmp_path):
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    loop = AgentLoop(
-        bus=bus,
-        provider=provider,
-        workspace=tmp_path,
-        model="test-model",
-        max_iterations=42,
-    )
+    with patch("teai_builder.agent.loop.WorkflowEngine"):
+        loop = AgentLoop(
+            bus=bus,
+            provider=provider,
+            workspace=tmp_path,
+            model="test-model",
+            max_iterations=42,
+        )
 
     assert loop.subagents.max_iterations == 42
 
@@ -247,13 +454,14 @@ async def test_agent_loop_syncs_updated_max_iterations_before_run(tmp_path):
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    loop = AgentLoop(
-        bus=bus,
-        provider=provider,
-        workspace=tmp_path,
-        model="test-model",
-        max_iterations=42,
-    )
+    with patch("teai_builder.agent.loop.WorkflowEngine"):
+        loop = AgentLoop(
+            bus=bus,
+            provider=provider,
+            workspace=tmp_path,
+            model="test-model",
+            max_iterations=42,
+        )
     loop.tools.get_definitions = MagicMock(return_value=[])
 
     async def fake_run(spec):
@@ -290,7 +498,8 @@ async def test_drain_pending_blocks_while_subagents_running(tmp_path):
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+    with patch("teai_builder.agent.loop.WorkflowEngine"):
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
 
     pending_queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
     session = Session(key="test:drain-block")
@@ -380,7 +589,8 @@ async def test_drain_pending_no_block_when_no_subagents(tmp_path):
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+    with patch("teai_builder.agent.loop.WorkflowEngine"):
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
 
     pending_queue: asyncio.Queue = asyncio.Queue()
     injection_callback = None
@@ -427,7 +637,8 @@ async def test_drain_pending_timeout(tmp_path):
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+    with patch("teai_builder.agent.loop.WorkflowEngine"):
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
 
     pending_queue: asyncio.Queue = asyncio.Queue()
     session = Session(key="test:drain-timeout")
