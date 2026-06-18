@@ -66,7 +66,43 @@ It is designed around three principles:
 - **Web**: Vercel, Netlify, Railway, Render, Fly.io, or a VPS — behind a verified
   deploy gate (health check + live screenshot).
 - **Mobile**: Expo EAS build & submit to the Play Store and App Store.
-- **Desktop**: Tauri / Electron installers (`.exe`, `.dmg`, `.AppImage`).
+- **Desktop**: CI-packaged desktop installers (`.exe`, `.dmg`, `.AppImage`).
+
+### Desktop app download / build
+
+Use the desktop app for a native TeAi Builder experience with the bundled WebUI
+and local full-access workspace mode.
+
+#### Recommended: download from CI artifacts
+`.github/workflows/desktop-package.yml` builds the desktop app for Linux,
+Windows, and macOS and stores GitHub Actions artifacts. Use the workflow
+artifacts as the downloadable desktop package; no local packaging toolchain is
+required.
+
+#### Local desktop build
+If you want to build locally:
+
+```bash
+# 1. Build the web UI
+cd webui
+npm ci
+npm run build
+cd ..
+
+# 2. Install packaging dependency
+pip install pyinstaller
+
+# 3. Build desktop package
+pyinstaller teai_builder/desktop/launcher.py \
+  --name teai_builder_desktop \
+  --add-data "teai_builder/web/dist:web/dist" \
+  --hidden-import teai_builder.command.builtin \
+  --hidden-import teai_builder.webui \
+  --collect-all teai_builder
+```
+
+Linux desktop packaging may require additional system libraries such as
+`libgtk-3-0`, `libwebkit2gtk-4.1-0`, and `libayatana-appindicator3-1`.
 
 ### Web UI with an auto-canvas
 The bundled web UI includes an adaptive **Canvas** panel that auto-detects and renders
