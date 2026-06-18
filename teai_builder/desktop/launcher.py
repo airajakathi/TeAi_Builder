@@ -29,16 +29,10 @@ def _wait_for_port(port: int, timeout: float = 90.0) -> bool:
     return False
 
 
-def _open_browser(url: str, delay: float = 1.0) -> None:
-    time.sleep(delay)
-    webbrowser.open(url)
-
-
 def main() -> int:
     from teai_builder.cli.commands import _run_gateway
     from teai_builder.config.loader import load_config
     from teai_builder.config.schema import Config
-    from teai_builder.webui.gateway_services import build_gateway_services
 
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
     web_dist = root / "web" / "dist"
@@ -46,7 +40,6 @@ def main() -> int:
 
     port = int(os.environ.get("TEAI_BUILDER_PORT", "8765"))
     url = f"http://127.0.0.1:{port}/"
-    Thread(target=_open_browser, args=(url,), daemon=True).start()
 
     try:
         config = load_config()
@@ -59,23 +52,42 @@ def main() -> int:
     else:
         workspace_path = root / "workspace"
 
-    if hasattr(config, "workspace_path"):
-        config.workspace_path = workspace_path
-
     if hasattr(config, "agents") and hasattr(config.agents, "defaults"):
         if not getattr(config.agents.defaults, "workspace", None):
             config.agents.defaults.workspace = str(workspace_path)
 
     static_dist_path = web_dist if web_dist.is_dir() else None
-    _run_gateway(
-        config,
-        port=port,
-        open_browser_url=None,
-        webui_static_dist=static_dist_path is not None,
-        webui_runtime_surface="desktop",
-        webui_runtime_capabilities={"desktop": True, "full_access": True},
-        health_server_enabled=False,
+
+    gateway_thread = Thread(
+        target=_run_gateway,
+        args=(
+            config,
+            port,
+            None,
+            static_dist_path is not None,
+            "desktop",
+            {"desktop": True, "full_access": True},
+            False,
+        ),
+        daemon=True,
     )
+    gateway_thread.start()
+
+    if not _wait_for_port(port, timeout=90.0):
+        print(f"Desktop launcher: gateway did not start on port {port}", file=sys.stderr)
+        return 1
+
+    import webview
+
+    webview.create_window(
+        title="TeAi Builder",
+        url=url,
+        width=1280,
+        height=800,
+        resizable=True,
+        fullscreen=False,
+    )
+    webview.start(debug=False)
     return 0
 
 

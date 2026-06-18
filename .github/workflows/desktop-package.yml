@@ -99,12 +99,44 @@ jobs:
             --hidden-import teai_builder.agent.workflows \
             --hidden-import teai_builder.agent.dream \
             --hidden-import teai_builder.agent.distill \
+            --hidden-import teai_builder.agent.health \
+            --hidden-import teai_builder.agent.resilience \
+            --hidden-import teai_builder.agent.tools.canvas \
+            --hidden-import teai_builder.agent.tools.execute_scaffold_plan \
+            --hidden-import teai_builder.agent.tools.github \
+            --hidden-import teai_builder.agent.tools.long_task \
+            --hidden-import teai_builder.agent.tools.product_surface_planner \
+            --hidden-import teai_builder.agent.tools.project_gate \
+            --hidden-import teai_builder.agent.tools.screenshot \
+            --hidden-import teai_builder.agent.tools.search \
+            --hidden-import teai_builder.agent.tools.spawn \
+            --hidden-import teai_builder.agent.tools.verification \
+            --hidden-import teai_builder.channels.dingtalk \
+            --hidden-import teai_builder.channels.discord \
+            --hidden-import teai_builder.channels.email \
+            --hidden-import teai_builder.channels.feishu \
+            --hidden-import teai_builder.channels.matrix \
+            --hidden-import teai_builder.channels.mochat \
+            --hidden-import teai_builder.channels.msteams \
+            --hidden-import teai_builder.channels.napcat \
+            --hidden-import teai_builder.channels.qq \
+            --hidden-import teai_builder.channels.signal \
+            --hidden-import teai_builder.channels.slack \
+            --hidden-import teai_builder.channels.telegram \
+            --hidden-import teai_builder.channels.wecom \
+            --hidden-import teai_builder.channels.weixin \
+            --hidden-import teai_builder.channels.whatsapp \
             --hidden-import teai_builder.command.builtin \
+            --hidden-import teai_builder.providers.transcription \
             --hidden-import teai_builder.webui \
             --hidden-import teai_builder.webui.gateway_services \
+            --hidden-import teai_builder.webui.mcp_presets_runtime \
             --collect-all teai_builder \
             --collect-all teai_builder.webui \
             teai_builder/desktop/launcher.py
+      - name: Package Linux .deb
+        if: matrix.os == 'ubuntu-latest'
+        run: bash scripts/package_deb.sh dist-desktop/${{ matrix.os }}
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v4
         with:

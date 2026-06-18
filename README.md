@@ -73,7 +73,16 @@ It is designed around three principles:
 Use the desktop app for a native TeAi Builder experience with the bundled WebUI
 and local full-access workspace mode.
 
-#### Recommended: download from CI artifacts
+#### Linux: install `.deb` from CI
+Use `teai-builder-desktop_*.deb` from CI artifacts. It declares the required
+system libraries in `Depends`, so `apt` installs them automatically.
+
+```bash
+sudo apt update
+sudo apt install -y ./teai-builder-desktop_*.deb
+```
+
+#### Windows and macOS
 `.github/workflows/desktop-package.yml` builds the desktop app for Linux,
 Windows, and macOS and stores GitHub Actions artifacts. Use the workflow
 artifacts as the downloadable desktop package; no local packaging toolchain is
@@ -89,7 +98,7 @@ npm ci
 npm run build
 cd ..
 
-# 2. Install packaging dependency
+# 2. Install packaging dependencies
 pip install pyinstaller
 
 # 3. Build desktop package
@@ -101,8 +110,9 @@ pyinstaller teai_builder/desktop/launcher.py \
   --collect-all teai_builder
 ```
 
-Linux desktop packaging may require additional system libraries such as
+On Linux, packaging may require additional system libraries such as
 `libgtk-3-0`, `libwebkit2gtk-4.1-0`, and `libayatana-appindicator3-1`.
+Prefer the `.deb` package above so these are installed automatically.
 
 ### Web UI with an auto-canvas
 The bundled web UI includes an adaptive **Canvas** panel that auto-detects and renders
